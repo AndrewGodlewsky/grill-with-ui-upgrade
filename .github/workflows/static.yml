@@ -23,7 +23,7 @@ jobs:
           done
       - name: Page stays dependency-free (no external fetches)
         run: |
-          if grep -En 'src="http|href="http|fonts\.googleapis' page.html; then
+          if grep -En "src=[\"']http|href=[\"']http|fonts\.googleapis|fetch\s*\(\s*[\"']https?://|url\(\s*[\"']?https?://|@import" page.html; then
             echo "page.html must not fetch external resources (system fonts only, works offline)"
             exit 1
           fi
