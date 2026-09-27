@@ -21,6 +21,5 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node }}
-      - run: node --version
       - run: node --check server.mjs
       - run: node --test test/server.test.mjs
