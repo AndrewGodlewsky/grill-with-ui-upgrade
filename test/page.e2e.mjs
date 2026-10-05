@@ -161,7 +161,7 @@ try {
 
   check("header has a Visualize button before any visual exists", await page.locator("header #visualize").count() === 1 && (await page.locator("#visualize").textContent()) === "Visualize" && await page.locator("body.visualize").count() === 0);
   check("header has a Use subagent checkbox beside Visualize, checked by default", await page.locator("header #use-subagent").isVisible() && await page.locator("#use-subagent").isChecked() && (await page.locator("label[for=use-subagent]").textContent()).trim() === "Use subagent");
-  check("the info bubble explains the trade-off", (await page.locator("#subagent-info").getAttribute("data-tip")) === "Using subagents frees up your main context for grilling. You can switch this off once you've done grilling to make the visualization go faster." && (await page.locator("#subagent-info").getAttribute("aria-label")) === "Using subagents frees up your main context for grilling. You can switch this off once you've done grilling to make the visualization go faster.");
+  check("the info bubble explains the trade-off", (await page.locator("#subagent-info").getAttribute("data-tip")) === "Using subagents frees up your main context for grilling. You can switch this off once you are done grilling to make the visualization build faster." && (await page.locator("#subagent-info").getAttribute("aria-label")) === "Using subagents frees up your main context for grilling. You can switch this off once you are done grilling to make the visualization build faster.");
   await page.locator("#subagent-info").focus();
   await capture("subagent-default-tooltip.png");
   await page.locator("#subagent-info").blur();
