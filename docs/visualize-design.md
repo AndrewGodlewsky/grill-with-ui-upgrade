@@ -100,13 +100,8 @@ finished. He requested that visualization stop auto-regenerating each turn.
 
 - **Who draws the file**: see [Subagent or inline](../SKILL.md#subagent-or-inline) for
   mode selection and execution. The user-facing toggle is described in [Use](../README.md#use).
-- **Prototype context** (added by Jason after the grill, 2026-09-07): when the topic is an
-  improvement or a feature in an existing app, the prototype is drawn in the context of that
-  app: the real page it lands on, the app's own chrome around it, and its actual styling
-  (tokens, components, type, colour) copied from the codebase, so the frame shows what will
-  ship. Existing parts as they are today, new parts as designed. The wireframe fidelity
-  (neutral palette, no undecided decoration) applies only to a new UI with nothing to match.
-  The interviewer names the landing page or component in the subagent's brief.
+- **Prototype context**: see the [visual brief](../visual-brief.md#the-file) for the
+  fidelity rules for existing apps and new UI.
 - **Background draws**: the draw lifecycle and handling of queued requests are defined in
   [Visualize](../SKILL.md#visualize).
 

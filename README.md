@@ -103,7 +103,8 @@ Visualizing… (or the strip says regenerating…) until the new version lands. 
 grilling is done, untick **Use subagent** beside Visualize: the agent then draws inline in
 its own turn, which is faster, at the cost of the markup landing in its context and Send
 waiting until the draw is done. The choice is remembered per grill across reloads and
-applies to Visualize, Regenerate, feedback, and Finish reconciliation when a visual exists.
+is read when the request is sent, including for staged feedback. It applies to Visualize,
+Regenerate, feedback, and Finish reconciliation when a visual exists.
 The checkbox hides when the grill is finished. Finish reconciles and copies the final
 visual next to the design doc as
 `docs/<topic>-visual.html`.
@@ -164,9 +165,12 @@ state.
 ```sh
 node --test test/server.test.mjs
 PLAYWRIGHT_PKG=/path/to/node_modules/@playwright/test/index.mjs node test/page.e2e.mjs
+PLAYWRIGHT_PKG=/path/to/node_modules/@playwright/test/index.mjs node test/subagent-toggle.e2e.mjs
 ```
 
 The page check needs Playwright with Chromium; point `PLAYWRIGHT_PKG` at an existing install
 or run it with `@playwright/test` installed next to the repo. It starts a real server on a
 throwaway session and drives the page end to end (staging, reload, send, working state,
 server restart, finished state).
+The focused toggle check covers both drawing modes, the choice at Send time, and per-grill
+persistence. Set `GRILL_EVIDENCE_DIR` to save screenshots and sent events from either check.

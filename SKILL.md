@@ -244,7 +244,7 @@ topic and the questions so far; say which in `visual.kind`; switch when feedback
 them, never the other way round. When the topic is an improvement or a feature in an
 existing app, the prototype is drawn **in the context of that app**: the real page it lands
 on, with the app's own chrome and styling, so it looks like what will actually ship. You
-know where it lands from the grill; tell the subagent.
+know where it lands from the grill; include that context in any subagent brief.
 
 **By default you never write `visual.html` yourself; a subagent draws it.** The file runs to hundreds
 of lines and is redrawn many times over a grill. Drawing it here would fill this session's
