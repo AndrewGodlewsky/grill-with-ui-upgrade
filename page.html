@@ -44,6 +44,14 @@
   #terms-toggle, #visualize { font-size: 12px; padding: 4px 10px; }
   #visualize .spin { width: 9px; height: 9px; margin-right: 4px; }
   #visualize:disabled { background: var(--panel); border-color: var(--rule); color: var(--ink-3); }
+  #subagent-opt { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; color: var(--ink-2); white-space: nowrap; }
+  #subagent-opt[hidden] { display: none; }
+  #subagent-opt input { margin: 0; accent-color: var(--accent); }
+  #subagent-opt label { cursor: pointer; }
+  .info { position: relative; display: inline-flex; align-items: center; justify-content: center; width: 14px; height: 14px; border-radius: 50%; border: 1px solid var(--ink-3); color: var(--ink-3); font: italic 600 10px/1 var(--serif); cursor: help; }
+  .info:hover, .info:focus { color: var(--ink); border-color: var(--ink); outline: none; }
+  .info::after { content: attr(data-tip); display: none; position: absolute; top: calc(100% + 8px); right: -8px; width: 260px; padding: 8px 10px; background: var(--panel); border: 1px solid var(--rule); border-radius: 6px; box-shadow: 0 8px 24px rgba(0,0,0,.08); color: var(--ink-2); font: 12px/1.45 system-ui, sans-serif; font-style: normal; white-space: normal; text-align: left; z-index: 6; }
+  .info:hover::after, .info:focus::after { display: block; }
   #terms { display: none; position: absolute; right: 24px; top: 100%; width: 420px; max-height: 60vh; overflow-y: auto; background: var(--panel); border: 1px solid var(--rule); border-radius: 8px; padding: 10px 16px; box-shadow: 0 8px 24px rgba(0,0,0,.08); z-index: 5; }
   #terms.show { display: block; }
   .term { padding: 8px 0; border-bottom: 1px solid var(--rule); font-size: 14px; } .term:last-child { border-bottom: 0; }
@@ -224,6 +232,7 @@
   <button id="terms-toggle" type="button">Terms</button>
   <div id="terms"></div>
   <button id="visualize" type="button" hidden>Visualize</button>
+  <span id="subagent-opt" hidden><input type="checkbox" id="use-subagent" checked><label for="use-subagent">Use subagent</label><span id="subagent-info" class="info" tabindex="0" role="img" aria-label="Using subagents frees up your main context for grilling. You can switch this off once you&#39;ve done grilling to make the visualization go faster." data-tip="Using subagents frees up your main context for grilling. You can switch this off once you&#39;ve done grilling to make the visualization go faster.">i</span></span>
   <span class="status"><span class="dot" id="agent-dot"></span><span id="agent-status">connecting…</span></span>
   <div id="progress"></div>
 </header>
@@ -251,7 +260,7 @@ const CHECK = '<svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="1
 let S = null, raw = null, selected = null, storeKey = null;
 let lastOk = Date.now(), gone = false, confirmFinish = false, intentOpen = false;
 let local = fresh();
-function fresh() { return { staged: {}, pending: [], drafts: {}, view: "questions", vfeedback: [] }; }
+function fresh() { return { staged: {}, pending: [], drafts: {}, view: "questions", vfeedback: [], subagent: true }; }
 function load() { local = fresh(); try { const v = localStorage.getItem(storeKey); if (v) local = Object.assign(fresh(), JSON.parse(v)); } catch {} }
 function save() { try { localStorage.setItem(storeKey, JSON.stringify(local)); } catch {} }
 
@@ -336,6 +345,10 @@ const lastPending = () => local.pending[local.pending.length - 1] || null;
 const isExploring = (id) => pendingActions(id).some((a) => a.type === "explore");
 const pendingOfType = (t) => local.pending.flatMap((p) => p.actions.filter((a) => a.type === t));
 const isVisualizing = () => pendingOfType("visualize").length > 0 || (!!drawing() && !drawStuck());
+// Every draw request says whether the agent should hand the drawing to a subagent (the default,
+// which keeps the markup out of the interview's context) or draw it inline, which is faster once
+// the grilling is done.
+const useSubagent = () => local.subagent !== false;
 const isFinishing = () => pendingOfType("finish").length > 0;
 const allSettled = () => qs().length > 0 && !qs().some(isOpen);
 function stagedCount() {
@@ -353,7 +366,7 @@ function buildActions() {
     if (s.answer) { const a = { q, type: "answer", kind: s.answer.kind }; if (s.answer.option) a.option = s.answer.option; if (s.answer.options) a.options = s.answer.options; if (s.answer.text) a.text = s.answer.text; out.push(a); }
     for (const t of s.thread || []) out.push({ q, type: "thread", text: t });
   }
-  for (const t of local.vfeedback) out.push({ type: "visual-feedback", text: t });
+  for (const t of local.vfeedback) out.push({ type: "visual-feedback", text: t, subagent: useSubagent() });
   return out;
 }
 function sendState(needStaged = true) {
@@ -389,14 +402,14 @@ async function send() {
 // Finish is not staged: confirming ships everything staged plus the finish action in one event, right away.
 async function finishNow() {
   if (sendState(false).disabled || isFinishing()) return;
-  const actions = buildActions().concat([{ type: "finish" }]);
+  const actions = buildActions().concat([visual() ? { type: "finish", subagent: useSubagent() } : { type: "finish" }]);
   const j = await post(actions);
   if (j) { local.pending.push({ seq: j.seq, at: new Date().toISOString(), actions }); local.staged = {}; local.vfeedback = []; confirmFinish = false; commit(); }
 }
 // Visualize is not staged either: the first click (and Regenerate) is a generate request, like Explore deeper.
 async function visualize() {
   if (sendState(false).disabled || isVisualizing()) return;
-  const actions = [{ type: "visualize" }];
+  const actions = [{ type: "visualize", subagent: useSubagent() }];
   const j = await post(actions);
   if (j) { local.pending.push({ seq: j.seq, at: new Date().toISOString(), actions }); local.view = "visualize"; commit(); }
 }
@@ -466,6 +479,7 @@ function renderHeader() {
 }
 function renderVisualizeButton() {
   const b = $("visualize"); const v = visual(); const lk = locked();
+  $("subagent-opt").hidden = lk; $("use-subagent").checked = useSubagent();
   if (hasVisual()) { b.hidden = false; b.disabled = false; b.title = ""; b.textContent = activeView() === "visualize" ? "Questions" : `Visual · v${esc(v.version)}`; return; }
   if (lk) { b.hidden = true; return; }
   b.hidden = false;
@@ -668,6 +682,7 @@ function renderSend() {
 
 $("send").onclick = send;
 $("intent").onclick = () => { if ($("intent").classList.contains("show")) { intentOpen = !intentOpen; render(); } };
+$("use-subagent").onchange = (e) => { local.subagent = e.target.checked; commit(); };
 $("visualize").onclick = () => { if (hasVisual()) { local.view = activeView() === "visualize" ? "questions" : "visualize"; commit(); } else visualize(); };
 $("terms-toggle").onclick = () => $("terms").classList.toggle("show");
 document.addEventListener("click", (e) => { if (!e.target.closest("#terms") && !e.target.closest("#terms-toggle")) $("terms").classList.remove("show"); });

@@ -173,8 +173,9 @@ described there, then return to listening.
      `updated: true`. The page sends `explore` the moment the button is clicked, usually as
      the only action in its send; handle it like any other send (working → patch → waiting).
    - `visualize` → see Visualize below: launch the draw subagent in the background and mark
-     `visual.drawing`; the send counts as handled the moment the brief is out. The page
-     sends it the moment the button (or Regenerate) is clicked, usually alone.
+     `visual.drawing`; the send counts as handled the moment the brief is out. With
+     `subagent: false` draw it inline instead (see "Subagent or inline" under Visualize). The
+     page sends it the moment the button (or Regenerate) is clicked, usually alone.
    - `visual-feedback` → append `{who:"user", text, at}` (the send's `at`) to
      `visual.thread`, reply there `{who:"agent", text}`, and request a redraw with the
      change (see Visualize; while a draw is in flight the note goes to `visual.queued`
@@ -247,11 +248,12 @@ existing app, the prototype is drawn **in the context of that app**: the real pa
 on, with the app's own chrome and styling, so it looks like what will actually ship. You
 know where it lands from the grill; tell the subagent.
 
-**You never write `visual.html` yourself; a subagent draws it.** The file runs to hundreds
+**By default you never write `visual.html` yourself; a subagent draws it.** The file runs to hundreds
 of lines and is redrawn many times over a grill. Drawing it here would fill this session's
 context with markup and slow every later send. You stay the interviewer: you pick the kind,
 write the brief, and record the result with `patch`. The rules for the file itself live
-in `$SKILL/visual-brief.md`; the subagent reads them, you do not repeat them.
+in `$SKILL/visual-brief.md`; the subagent reads them, you do not repeat them. The one
+exception is the user switching **Use subagent** off (see "Subagent or inline" below).
 
 Draw only for the first Visualize click, Regenerate, explicit visual feedback, or the
 Finish reconcile. A requested redraw brings the visual up to date with **all** current
@@ -322,6 +324,27 @@ tasks are dropped when its turn ends. If you are yourself running as a subagent,
 harness has no subagent tool, draw the file yourself from `visual-brief.md`, inline, then
 bump the version in the send's one patch.
 
+### Subagent or inline
+
+The page has a **Use subagent** checkbox beside Visualize, checked by default. Every draw
+request carries its value as `subagent`: the `visualize` and `visual-feedback` actions, and
+the `finish` action when a visual exists. A missing `subagent` means `true` (an older page).
+
+- `subagent: true` → the background subagent draw above.
+- `subagent: false` → the user has finished grilling and wants the draw fast. Draw it
+  **inline, in this turn**: read `$SKILL/visual-brief.md` and write `<session>/visual.html`
+  yourself, from the same kind, context, and change list you would have put in the brief.
+  Before you start, patch the first draw's `visual` (kind, `"version": 0`, `thread: []`,
+  `"stale": false`) or, on a redraw, `"stale": false`, together with
+  `"drawing": { "seq": <seq> }`, so the page shows Visualizing… (or regenerating…) while
+  `agent.status` stays `working`. When the file is written, the send's one step-6 patch
+  carries `"version": <version + 1>`, the `note`, `"drawing": null`, and the usual
+  `agent.handled` and `"status": "waiting"`. Send stays disabled while you draw; that is the
+  trade the user chose.
+- A subagent draw already in flight still wins: never two draws at once. Queue the request
+  in `visual.queued` as usual; when the in-flight draw lands, draw the queued bullets the way
+  the newest queued request asked (inline when its `subagent` was `false`).
+
 Feedback arrives as `visual-feedback` actions (see Handling a send); sending visual feedback
 explicitly requests a redraw. Answers and question discussions do not. On Finish the visual
 is reconciled with the decisions and copied next to the doc.
@@ -358,7 +381,9 @@ On a `finish` action, or when the user says finish in the terminal:
    slug, `-visual.html`) and add `"visual": <that path>` to `finished` (it is replaced
    whole, so give `doc` again, or fold it into the step 2 patch). Otherwise request one
    reconciling draw (or let the in-flight one land), return to listening, and when it lands
-   copy the file and patch `finished` with `visual` then.
+   copy the file and patch `finished` with `visual` then. The reconciling draw follows the
+   `finish` action's `subagent`: with `false`, draw inline before step 2 and export it in
+   the same patch.
 4. Once there is no draw in flight and the exports are complete, stop the persistent
    Monitor with TaskStop, or stop the server as described in Wait mode.
 5. Print one line with the doc path (and the visual's). End.
@@ -437,6 +462,6 @@ Send lines (`events.jsonl`, also printed by `serve`):
   { "q": "q16", "type": "answer", "kind": "accept|option", "options": ["A", "C"] },  // a multi question
   { "q": "q8",  "type": "thread", "text": "…" },
   { "q": "q17", "type": "defer" }, { "q": "q3", "type": "reopen" }, { "q": "q9", "type": "explore" },
-  { "type": "visualize" }, { "type": "visual-feedback", "text": "…" },
-  { "type": "finish" } ] }
+  { "type": "visualize", "subagent": true }, { "type": "visual-feedback", "text": "…", "subagent": true },
+  { "type": "finish", "subagent": true } ] }   // subagent: the page's Use subagent checkbox; absent means true
 ```

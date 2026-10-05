@@ -100,7 +100,11 @@ has a version number and a one-line change note. The agent never writes the file
 grill conversation itself: it briefs a subagent (rules in `visual-brief.md`) so hundreds of
 lines of markup stay out of the interview's context. The draw runs in the background, so
 Send keeps working and the interview goes on while it is drawn; the header says
-Visualizing… (or the strip says regenerating…) until the new version lands. Finish
+Visualizing… (or the strip says regenerating…) until the new version lands. Once the
+grilling is done, untick **Use subagent** beside Visualize: the agent then draws inline in
+its own turn, which is faster, at the cost of the markup landing in its context and Send
+waiting until the draw is done. The choice is remembered per grill and rides on every
+Visualize, Regenerate, feedback, and Finish request. Finish
 reconciles and copies the final visual next to the design doc as
 `docs/<topic>-visual.html`.
 
