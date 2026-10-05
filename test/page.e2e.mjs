@@ -2,7 +2,7 @@
 //   PLAYWRIGHT_PKG=/path/to/node_modules/@playwright/test/index.mjs node test/page.e2e.mjs
 // or, with @playwright/test installed next to this repo, just `node test/page.e2e.mjs`.
 import { spawn, execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -52,6 +52,9 @@ page.on("console", (m) => { if (m.type() === "error") errors.push(m.text()); });
 page.on("pageerror", (e) => errors.push(String(e)));
 const results = [];
 const check = (name, ok, extra = "") => { results.push({ name, ok, extra }); if (!ok) console.log("FAIL", name, extra); };
+const evidence = process.env.GRILL_EVIDENCE_DIR;
+if (evidence) mkdirSync(evidence, { recursive: true });
+const capture = async (name) => { if (evidence) await page.screenshot({ path: join(evidence, name), fullPage: true }); };
 
 try {
   await page.goto(url);
@@ -121,7 +124,7 @@ try {
   check("footer shows the explore send as sent", (await page.locator("#staged-list").textContent()).includes("Sent #1"));
   check("nav shows staged", (await page.locator(".item.selected .mark").textContent()) === "staged");
   await page.locator("#free").fill("draft text that should survive reload");
-  await page.screenshot({ path: "/tmp/grill-v1.png" });
+  await capture("grill-staged.png");
 
   await page.reload();
   await page.locator(".item").first().waitFor();
@@ -159,6 +162,9 @@ try {
   check("header has a Visualize button before any visual exists", await page.locator("header #visualize").count() === 1 && (await page.locator("#visualize").textContent()) === "Visualize" && await page.locator("body.visualize").count() === 0);
   check("header has a Use subagent checkbox beside Visualize, checked by default", await page.locator("header #use-subagent").isVisible() && await page.locator("#use-subagent").isChecked() && (await page.locator("label[for=use-subagent]").textContent()).trim() === "Use subagent");
   check("the info bubble explains the trade-off", (await page.locator("#subagent-info").getAttribute("data-tip")) === "Using subagents frees up your main context for grilling. You can switch this off once you've done grilling to make the visualization go faster." && (await page.locator("#subagent-info").getAttribute("aria-label")) === "Using subagents frees up your main context for grilling. You can switch this off once you've done grilling to make the visualization go faster.");
+  await page.locator("#subagent-info").focus();
+  await capture("subagent-default-tooltip.png");
+  await page.locator("#subagent-info").blur();
 
   // Discussion scroll, first on a panel that cannot scroll at all: nothing there is "at the
   // bottom", so long content arriving is read from its first line. The pros and cons table is
@@ -322,6 +328,7 @@ try {
   await page.waitForFunction(() => document.body.classList.contains("visualize"), null, { timeout: 5000 });
   check("visualize view and staged feedback survive reload", await page.locator("aside .msg.staged").count() === 1 && (await page.locator("#staged-list").textContent()).includes("visual +1 msg"));
   check("Use subagent stays unchecked across a reload", !(await page.locator("#use-subagent").isChecked()));
+  await capture("subagent-unchecked-after-reload.png");
   await page.locator("#send").click();
   await page.waitForFunction(() => document.getElementById("staged-list").textContent.includes("Sent #5"));
   const fbEv = JSON.parse(await srv.nth(6));
@@ -387,6 +394,8 @@ try {
   await page.locator("#visualize").click();
   check("finished: visual still viewable, composer and regenerate gone", await page.locator("body.visualize").count() === 1 && await page.locator("#feedback-in").count() === 0 && await page.locator("#regen").count() === 0);
   check("finished: Use subagent is hidden, nothing left to draw", await page.locator("#use-subagent").isHidden());
+  await capture("subagent-hidden-finished.png");
+  if (evidence) writeFileSync(join(evidence, "page-events.jsonl"), readFileSync(join(session, "events.jsonl")));
   await page.locator("#visualize").click();
   check("staging locked when finished", await page.locator("#free").count() === 0 && await page.locator("#thread-in").count() === 0 && await page.locator("#finish").count() === 0);
 

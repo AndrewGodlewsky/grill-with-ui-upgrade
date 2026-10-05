@@ -64,9 +64,8 @@ What the agent needs at run time:
   active in the foreground. It returns on the next Send or after a bounded timeout, then
   loops. The agent keeps listening after replies and completed visuals, until the user
   finishes or explicitly pauses; a running server is not a substitute for that listener.
-- **Optionally a subagent tool**, for Visualize. With one, the visual is drawn in the
-  background while you keep answering. Without one, the agent draws it inline and that
-  turn takes longer.
+- **Optionally a subagent tool**, for Visualize. See [Use](#use) for the drawing modes;
+  without a subagent tool, the agent draws inline.
 
 ## Use
 
@@ -96,16 +95,17 @@ redraws it; a note that contradicts an answered question reopens that question r
 silently changing your answer. Ordinary answers and question discussions do not regenerate
 the visual or delay the next round. When decisions change what it shows, it is marked
 **Out of date**; click **Regenerate** to include the latest decisions. Each requested redraw
-has a version number and a one-line change note. The agent never writes the file in the
-grill conversation itself: it briefs a subagent (rules in `visual-brief.md`) so hundreds of
-lines of markup stay out of the interview's context. The draw runs in the background, so
-Send keeps working and the interview goes on while it is drawn; the header says
+has a version number and a one-line change note. **Use subagent** is checked by default:
+the agent briefs a subagent so hundreds of lines of markup stay out of the interview's
+context. The draw runs in the background, so Send keeps working and the interview goes
+on while it is drawn; the header says
 Visualizing… (or the strip says regenerating…) until the new version lands. Once the
 grilling is done, untick **Use subagent** beside Visualize: the agent then draws inline in
 its own turn, which is faster, at the cost of the markup landing in its context and Send
-waiting until the draw is done. The choice is remembered per grill and rides on every
-Visualize, Regenerate, feedback, and Finish request. Finish
-reconciles and copies the final visual next to the design doc as
+waiting until the draw is done. The choice is remembered per grill across reloads and
+applies to Visualize, Regenerate, feedback, and Finish reconciliation when a visual exists.
+The checkbox hides when the grill is finished. Finish reconciles and copies the final
+visual next to the design doc as
 `docs/<topic>-visual.html`.
 
 **Finish grill** sends at once (after an inline confirm), together with anything you had
@@ -130,7 +130,7 @@ Session state lives outside your repo, so there is nothing to gitignore:
   state.json     written only by the agent, through `patch` (questions, recommendations, threads, status)
   events.jsonl   appended only by the page, one line per Send
   server.json    url, port and pid of the running server
-  visual.html    the prototype or diagram, drawn by the agent's subagent, served at /visual
+  visual.html    the prototype or diagram, served at /visual
 ```
 
 `<project-key>` is the git common root of the project with slashes turned into dashes, so
