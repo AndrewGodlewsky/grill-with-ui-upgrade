@@ -1,0 +1,171 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Dark mode prototype — grill-with-ui</title>
+<!-- PROTOTYPE: Three dark-mode directions for the existing grill page, switchable with ?variant=A|B|C. No session data or sends. -->
+<style>
+  :root { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif; }
+  * { box-sizing: border-box; }
+  body { margin: 0; min-height: 100vh; display: grid; grid-template-columns: 260px minmax(0,1fr) minmax(280px,33vw); grid-template-rows: auto 1fr auto; background: var(--bg); color: var(--ink); font-size: 14px; line-height: 1.5; }
+  body[data-variant="A"] { --bg:#171713; --panel:#24231e; --raised:#302e27; --ink:#f1ece2; --muted:#c8bfae; --faint:#a99f8e; --rule:#454136; --accent:#eb9e81; --accent-soft:#3b2923; --stage:#e7b96a; --stage-soft:#3a3020; --ok:#91cba0; --ok-soft:#22382b; }
+  body[data-variant="B"] { --bg:#101827; --panel:#182335; --raised:#233149; --ink:#edf3fc; --muted:#c5d1e2; --faint:#9bacc5; --rule:#394b65; --accent:#94cfff; --accent-soft:#1b3752; --stage:#f0c178; --stage-soft:#3e3425; --ok:#8fd4b3; --ok-soft:#203c36; }
+  body[data-variant="C"] { --bg:#080808; --panel:#151515; --raised:#222; --ink:#f5f5f1; --muted:#d0d0ca; --faint:#aaa9a0; --rule:#484848; --accent:#f4c16f; --accent-soft:#322819; --stage:#d8abf2; --stage-soft:#302438; --ok:#9cdeb0; --ok-soft:#203328; }
+  body[data-mode="light"] { --bg:#f7f4ee; --panel:#fff; --raised:#f6f1e9; --ink:#1f1c18; --muted:#625b51; --faint:#756d61; --rule:#d7cfc1; --accent:#9a3a26; --accent-soft:#fbe9e4; --stage:#946419; --stage-soft:#f8ecd2; --ok:#3d6b4a; --ok-soft:#e3eee5; }
+  button { font: inherit; cursor: pointer; border: 1px solid var(--rule); border-radius: 8px; padding: 8px 12px; background: var(--panel); color: var(--ink); }
+  button:hover { border-color: var(--accent); }
+  button:focus-visible, a:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: var(--bg); font-weight: 700; }
+  .serif { font-family: "Iowan Old Style", Charter, Georgia, serif; font-weight: 500; }
+  header { grid-column:1/-1; min-height:65px; display:flex; align-items:center; gap:14px; padding:12px 22px; border-bottom:1px solid var(--rule); background:var(--panel); }
+  header h1 { margin:0; font-size:21px; }
+  header .path { color:var(--faint); font-size:13px; }
+  .spacer { flex:1; }
+  .status { color:var(--muted); white-space:nowrap; display:flex; align-items:center; gap:7px; font-size:13px; }
+  .status::before { content:""; width:8px; height:8px; border-radius:50%; background:var(--ok); }
+  .appearance { position:relative; }
+  .control { display:none; }
+  body[data-variant="A"] .control-a, body[data-variant="B"] .control-b, body[data-variant="C"] .control-c { display:flex; align-items:center; }
+  .control-a { gap:2px; padding:3px; border:1px solid var(--rule); background:var(--raised); border-radius:9px; }
+  .control-a button { border:0; background:transparent; color:var(--muted); padding:5px 9px; font-size:12px; }
+  .control-a button.selected { background:var(--panel); color:var(--ink); box-shadow:0 1px 5px #0004; }
+  .control-b button { display:flex; align-items:center; gap:8px; }
+  .control-c button { display:flex; align-items:center; gap:6px; }
+  .appearance-menu { position:absolute; top:42px; right:0; width:252px; background:var(--raised); border:1px solid var(--rule); box-shadow:0 12px 30px #0007; padding:10px; border-radius:10px; z-index:3; }
+  .appearance-menu[hidden] { display:none; }
+  .appearance-menu strong { display:block; font-size:12px; letter-spacing:.07em; text-transform:uppercase; color:var(--faint); padding:3px 6px 8px; }
+  .appearance-menu button { width:100%; justify-content:space-between; text-align:left; margin:2px 0; border-color:transparent; background:transparent; }
+  .appearance-menu button.selected { color:var(--accent); background:var(--accent-soft); }
+  nav { padding:16px 0; border-right:1px solid var(--rule); overflow:auto; }
+  .round { color:var(--accent); font-size:11px; font-weight:700; letter-spacing:.1em; text-transform:uppercase; padding:6px 20px; }
+  .item { display:flex; gap:11px; align-items:baseline; padding:8px 18px; color:var(--muted); }
+  .item .id { color:var(--faint); font-size:12px; width:22px; flex:none; }
+  .item.selected { background:var(--panel); box-shadow:inset 3px 0 var(--accent); color:var(--ink); }
+  .item .mark { margin-left:auto; color:var(--ok); font-size:12px; }
+  .item .mark.open { color:var(--accent); }
+  main { padding:34px 44px 80px; overflow:auto; background:var(--panel); }
+  article { max-width:680px; }
+  .crumb { color:var(--faint); font-size:12px; }
+  .title { display:flex; align-items:start; gap:12px; justify-content:space-between; margin:8px 0 12px; }
+  h2 { font-size:30px; line-height:1.16; margin:0; }
+  .question-body { color:var(--muted); font-size:15px; max-width:60ch; margin:0 0 24px; }
+  .options { display:grid; gap:8px; }
+  .option { display:flex; gap:12px; border:1px solid var(--rule); background:var(--panel); border-radius:8px; padding:12px 14px; min-height:58px; }
+  .option.rec { border-color:var(--accent); background:var(--accent-soft); }
+  .option.staged { border-color:var(--stage); background:var(--stage-soft); }
+  .letter { font-family:Georgia,serif; color:var(--faint); font-size:18px; }
+  .rec .letter, .rec .tag { color:var(--accent); }
+  .tag { font-size:10px; font-weight:700; letter-spacing:.06em; text-transform:uppercase; }
+  .why { color:var(--muted); margin:14px 0 20px; }
+  .why b { color:var(--accent); }
+  .staged-note { color:var(--stage); font-size:13px; margin-bottom:18px; }
+  textarea { width:100%; min-height:68px; resize:vertical; border:1px solid var(--rule); background:var(--panel); color:var(--ink); border-radius:8px; padding:10px 12px; font:inherit; }
+  textarea::placeholder { color:var(--faint); }
+  aside { border-left:1px solid var(--rule); display:flex; flex-direction:column; min-height:0; }
+  aside .head { padding:20px 22px 12px; }
+  aside h3 { color:var(--faint); font-size:11px; text-transform:uppercase; letter-spacing:.08em; margin:0 0 3px; }
+  aside .sub { font-size:16px; }
+  .messages { padding:0 22px; overflow:auto; flex:1; }
+  .message { border-top:1px solid var(--rule); padding:12px 0; }
+  .message small { display:block; font-size:11px; text-transform:uppercase; letter-spacing:.06em; color:var(--accent); }
+  .message.user small { color:var(--stage); }
+  .message p { margin:5px 0 0; }
+  .compose { border-top:1px solid var(--rule); padding:12px 22px 18px; }
+  .compose button { float:right; margin-top:8px; }
+  footer { grid-column:1/-1; border-top:1px solid var(--rule); display:flex; align-items:center; gap:14px; background:var(--panel); padding:12px 22px; }
+  footer .staged { color:var(--stage); margin-right:auto; }
+  .prototype-bar { position:fixed; z-index:10; left:50%; bottom:16px; transform:translateX(-50%); display:flex; align-items:center; gap:7px; border-radius:999px; padding:6px; background:#f4f4f1; border:1px solid #a1a1a1; color:#151515; box-shadow:0 8px 28px #0009; white-space:nowrap; }
+  .prototype-bar button { background:#151515; color:#fff; border:0; border-radius:50%; width:30px; height:30px; padding:0; }
+  .prototype-bar span { padding:0 7px; font-size:12px; font-weight:700; }
+  .prototype-note { position:fixed; z-index:9; left:16px; bottom:18px; max-width:280px; background:var(--raised); border:1px solid var(--rule); color:var(--muted); padding:9px 11px; border-radius:8px; font-size:12px; }
+  @media(max-width:900px) { body { grid-template-columns:190px minmax(0,1fr); } aside { grid-column:1/-1; border-left:0; border-top:1px solid var(--rule); min-height:260px; } }
+  @media(max-width:620px) { body { display:block; } header { flex-wrap:wrap; } header .path { display:none; } .spacer { flex-basis:10%; } .status { display:none; } nav { border-right:0; border-bottom:1px solid var(--rule); max-height:125px; } main { padding:24px 18px 90px; } h2 { font-size:25px; } aside { min-height:330px; } .prototype-note { display:none; } .prototype-bar { bottom:10px; } footer { padding-bottom:70px; } }
+</style>
+</head>
+<body data-variant="A" data-mode="dark">
+<header>
+  <h1 class="serif">grill</h1><span class="path">docs/theme-preferences-design.md</span>
+  <button type="button">Terms</button><button type="button">Visualize</button>
+  <span class="spacer"></span>
+  <div class="appearance">
+    <div class="control control-a" aria-label="Appearance">
+      <button type="button" data-choice="system">System</button><button type="button" data-choice="light">Light</button><button type="button" data-choice="dark">Dark</button>
+    </div>
+    <div class="control control-b"><button type="button" id="quick-toggle" aria-label="Toggle dark mode">☾ <span>Dark</span></button></div>
+    <div class="control control-c"><button type="button" id="appearance-button" aria-expanded="false">◐ Appearance ▾</button></div>
+    <div class="appearance-menu" id="appearance-menu" hidden><strong>Appearance</strong><button type="button" data-menu-choice="system">Use system <span>◯</span></button><button type="button" data-menu-choice="light">Light <span>◯</span></button><button type="button" data-menu-choice="dark">Dark <span>◯</span></button></div>
+  </div>
+  <span class="status">agent waiting</span>
+</header>
+<nav>
+  <div class="round">Round 2 <span style="float:right;color:var(--faint)">2 open</span></div>
+  <div class="item"><span class="id">Q3</span><span>Session storage</span><span class="mark">✓</span></div>
+  <div class="item selected"><span class="id">Q4</span><span>Theme preference</span><span class="mark open">open</span></div>
+  <div class="item"><span class="id">Q5</span><span>Visual preview</span><span class="mark open">open</span></div>
+  <div class="round" style="color:var(--faint)">Round 1</div>
+  <div class="item"><span class="id">Q1</span><span>Audience</span><span class="mark">✓</span></div>
+  <div class="item"><span class="id">Q2</span><span>Color direction</span><span class="mark">✓</span></div>
+</nav>
+<main>
+  <article>
+    <div class="crumb">Q4 · round 2 &nbsp;·&nbsp; after Q2</div>
+    <div class="title"><h2 class="serif">How should the page choose its theme?</h2><button type="button">Explore deeper</button></div>
+    <p class="question-body">A grill can stay open for hours. The page should feel comfortable as the room lighting changes and should remember what you chose.</p>
+    <div class="options">
+      <div class="option rec"><span class="letter">A</span><span><span class="tag">Recommended</span><br>Follow the system, with a manual override</span></div>
+      <div class="option staged"><span class="letter">B</span><span>Use a Light / Dark switch only</span></div>
+      <div class="option"><span class="letter">C</span><span>Always use dark mode</span></div>
+    </div>
+    <p class="why"><b>Why A.</b> It feels right on first open and still gives you control when the room or screen changes.</p>
+    <div class="staged-note">Staged: option B</div>
+    <textarea placeholder="Free-text answer, if none of the options fit…"></textarea>
+  </article>
+</main>
+<aside>
+  <div class="head"><h3>Discussion</h3><div class="sub serif">Q4 · Theme preference</div></div>
+  <div class="messages">
+    <div class="message user"><small>You · 10:14</small><p>Will the visual preview change when I switch themes?</p></div>
+    <div class="message"><small>Agent · 10:15</small><p>The page shell can switch instantly. Generated visuals may use their own colors, so we should decide whether to request theme-aware visuals or show them as authored.</p></div>
+  </div>
+  <div class="compose"><textarea placeholder="Dig deeper on Q4…"></textarea><button type="button">Add to discussion</button></div>
+</aside>
+<footer><span class="staged">1 staged · Q4 option B</span><button type="button">Finish grill</button><button class="primary" type="button">Send 1 to Agent</button></footer>
+<div class="prototype-note" id="prototype-note"></div>
+<div class="prototype-bar" aria-label="Prototype variants"><button type="button" id="previous" aria-label="Previous variant">←</button><span id="variant-label"></span><button type="button" id="next" aria-label="Next variant">→</button></div>
+<script>
+  const names = { A: "Warm charcoal · inline choice", B: "Cool slate · quick switch", C: "High contrast · appearance menu" };
+  const notes = { A: "Three choices are always visible in the header. System follows the device; Light and Dark override it.", B: "A single header switch makes the current theme obvious. There is no System preference in this direction.", C: "The header stays quiet until Appearance opens a menu with the three theme choices." };
+  const search = new URLSearchParams(location.search);
+  let variant = names[search.get("variant")] ? search.get("variant") : "A";
+  let choice = "dark";
+  const body = document.body;
+  function render() {
+    body.dataset.variant = variant;
+    body.dataset.mode = choice === "light" ? "light" : "dark";
+    document.getElementById("variant-label").textContent = `${variant} · ${names[variant]}`;
+    document.getElementById("prototype-note").textContent = notes[variant];
+    document.querySelectorAll("[data-choice]").forEach(button => button.classList.toggle("selected", button.dataset.choice === choice));
+    document.querySelectorAll("[data-menu-choice]").forEach(button => { const selected = button.dataset.menuChoice === choice; button.classList.toggle("selected", selected); button.lastElementChild.textContent = selected ? "●" : "◯"; });
+    document.querySelector("#quick-toggle span").textContent = choice === "light" ? "Light" : "Dark";
+  }
+  function setVariant(next) {
+    variant = next;
+    choice = "dark";
+    search.set("variant", variant);
+    history.replaceState(null, "", `${location.pathname}?${search}`);
+    document.getElementById("appearance-menu").hidden = true;
+    render();
+  }
+  function cycle(direction) { const variants = Object.keys(names); setVariant(variants[(variants.indexOf(variant) + direction + variants.length) % variants.length]); }
+  document.getElementById("previous").onclick = () => cycle(-1);
+  document.getElementById("next").onclick = () => cycle(1);
+  document.querySelectorAll("[data-choice]").forEach(button => button.onclick = () => { choice = button.dataset.choice; render(); });
+  document.querySelectorAll("[data-menu-choice]").forEach(button => button.onclick = () => { choice = button.dataset.menuChoice; document.getElementById("appearance-menu").hidden = true; document.getElementById("appearance-button").setAttribute("aria-expanded", "false"); render(); });
+  document.getElementById("quick-toggle").onclick = () => { choice = choice === "light" ? "dark" : "light"; render(); };
+  document.getElementById("appearance-button").onclick = () => { const menu = document.getElementById("appearance-menu"); menu.hidden = !menu.hidden; document.getElementById("appearance-button").setAttribute("aria-expanded", String(!menu.hidden)); };
+  document.addEventListener("keydown", event => { if (["INPUT", "TEXTAREA"].includes(document.activeElement.tagName) || document.activeElement.isContentEditable) return; if (event.key === "ArrowLeft") cycle(-1); if (event.key === "ArrowRight") cycle(1); });
+  render();
+</script>
+</body>
+</html>
