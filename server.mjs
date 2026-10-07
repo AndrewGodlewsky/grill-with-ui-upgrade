@@ -1,32 +1,48 @@
 #!/usr/bin/env node
 // grill-with-ui server. Plain Node, no dependencies, no build step.
 //
-//   new      --topic T [--doc P]                    create a session folder under GRILL_HOME, print {session,key,project,id,doc}
-//   serve    --session DIR [--port N]               serve the page; append each Send to events.jsonl AND print the same
+//   new      --topic T [--intent I] [--doc P]         create a session folder under GRILL_HOME, print {session,key,project,id,doc,intent}
+//   serve    --session DIR [--port N] [--host ADDR | --lan] [--open | --open-command P]
+//                                                   serve the page; append each Send to events.jsonl AND print the same
 //                                                   line to stdout (this process is the agent's Monitor command).
 //                                                   Without --port it retries the port it used last time, then falls
 //                                                   back to an ephemeral one, so an open tab survives a restart.
+//                                                   Loopback is the default: --lan listens on all interfaces and
+//                                                   prints a LAN URL next to the localhost one; --host ADDR is the
+//                                                   escape hatch. --open attempts to open the live page in a browser
+//                                                   (best effort, never fails setup); --open-command P runs P with
+//                                                   the URL as its argument instead of the OS opener.
 //   sessions [--all]                                list this project's sessions (newest first; --all adds finished ones)
 //   pending  --session DIR                          print every Send past agent.handled (replay on resume)
 //   wait     --session DIR [--after N] [--timeout S] block until a Send newer than seq N lands, print it, exit 0
 //                                                   (exit 3 on timeout) — for agents without a Monitor tool
-//   url      --session DIR [--timeout S]            print the running server's url (from server.json)
+//   url      --session DIR [--timeout S] [--all]    print the running server's url (from server.json);
+//                                                   --all also prints the LAN URL when the server exposes one
 //   patch    --session DIR [--file P]               apply a JSON patch (stdin, or the file P) to state.json: merge,
 //                                                   validate, write atomically, print one short summary line
 //
 // Files (per session folder): state.json  — written only by the agent, through `patch`
 //                             events.jsonl — appended only by this server, one line per Send
 //                             server.json  — url, port, pid of the running server
+// Files (global, under GRILL_HOME): ui.json — UI prefs shared by every grill (theme)
 import http from "node:http";
+import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import tty from "node:tty";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const HOME = process.env.GRILL_HOME || path.join(os.homedir(), ".grill-with-ui");
+const MAX_BODY_BYTES = 1024 * 1024;
+// ui.json is global, not per session: the theme must survive a new grill on a new port.
+const THEMES = ["system", "light", "dark"];
+const uiFile = path.join(HOME, "ui.json");
+const readTheme = () => {
+  try { const t = JSON.parse(fs.readFileSync(uiFile, "utf8")).theme; return THEMES.includes(t) ? t : "system"; } catch { return "system"; }
+};
 
 function parseArgs(argv) {
   const o = { _: [] };
@@ -44,7 +60,7 @@ const die = (msg, code = 2) => { process.stderr.write(`grill: ${msg}\n`); proces
 function writeJson(file, obj) {
   const text = JSON.stringify(obj, null, 2) + "\n";
   const tmp = `${file}.${process.pid}.tmp`;
-  try { fs.writeFileSync(tmp, text); fs.renameSync(tmp, file); } catch (e) { fs.rmSync(tmp, { force: true }); throw e; }
+  try { fs.writeFileSync(tmp, text, { mode: 0o600 }); fs.renameSync(tmp, file); } catch (e) { fs.rmSync(tmp, { force: true }); throw e; }
   return Buffer.byteLength(text);
 }
 function mustSession(o) {
@@ -72,18 +88,20 @@ function cmdNew(o) {
   const project = projectRoot(process.cwd());
   const key = keyOf(project);
   const dir = path.join(HOME, "sessions", key);
-  fs.mkdirSync(dir, { recursive: true });
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
   const id = stamp();
   let session = path.join(dir, id);
   for (let n = 2; fs.existsSync(session); n++) session = path.join(dir, `${id}-${n}`);
-  fs.mkdirSync(session);
+  fs.mkdirSync(session, { mode: 0o700 });
   const now = new Date().toISOString();
   writeJson(path.join(session, "state.json"), {
-    topic: typeof o.topic === "string" ? o.topic : "", doc: typeof o.doc === "string" ? o.doc : "",
-    project, created: now, agent: { status: "working", since: now }, terms: [], questions: [],
+    topic: typeof o.topic === "string" ? o.topic : "",
+    intent: typeof o.intent === "string" ? o.intent : "",
+    doc: typeof o.doc === "string" ? o.doc : "",
+    project, created: now, agent: { status: "working", since: now }, terms: [], questions: [], discussion: [],
   });
-  fs.writeFileSync(path.join(session, "events.jsonl"), "");
-  print({ session, key, project, id: path.basename(session), doc: typeof o.doc === "string" ? o.doc : "" });
+  fs.writeFileSync(path.join(session, "events.jsonl"), "", { mode: 0o600 });
+  print({ session, key, project, id: path.basename(session), doc: typeof o.doc === "string" ? o.doc : "", intent: typeof o.intent === "string" ? o.intent : "" });
 }
 
 // ---- events.jsonl helpers ----
@@ -113,7 +131,7 @@ function cmdSessions(o) {
     if (!st) continue;
     const qs = Array.isArray(st.questions) ? st.questions : [];
     rows.push({
-      session, id, topic: st.topic || "", created: st.created || "", finished: st.finished || null,
+      session, id, topic: st.topic || "", intent: st.intent || "", doc: st.doc || "", created: st.created || "", finished: st.finished || null,
       open: qs.filter(isOpen).length, answered: qs.filter((q) => q.status === "answered").length,
       handled: Number(st.agent && st.agent.handled) || 0, lastSeq: lastSeq(path.join(session, "events.jsonl")),
     });
@@ -133,8 +151,92 @@ function cmdPending(o) {
 }
 
 // ---- serve ----
+// A printed URL is a promise the server keeps: the LAN URL is printed only
+// when the server actually listens beyond loopback (--lan or an --host that
+// binds all interfaces). The default stays loopback-only.
+function lanIPv4All() {
+  const out = [];
+  for (const addrs of Object.values(os.networkInterfaces())) {
+    for (const a of addrs || []) {
+      if (a && a.family === "IPv4" && !a.internal) out.push(a.address);
+    }
+  }
+  return out;
+}
+// Prefer the Wi-Fi-style private ranges over VPN/carrier addresses: on a machine
+// with Tailscale the first non-internal IPv4 can be 100.x, not the LAN one.
+function isRFC1918(ip) {
+  if (ip.startsWith("10.")) return true;
+  if (ip.startsWith("192.168.")) return true;
+  const m = ip.match(/^172\.(\d+)\./);
+  if (m) { const n = Number(m[1]); return n >= 16 && n <= 31; }
+  return false;
+}
+function lanIPv4() {
+  const all = lanIPv4All();
+  return all.find(isRFC1918) || all[0] || null;
+}
+// Loopback in the forms Node reports it: 127.0.0.1, ::1, and IPv4-mapped ::ffff:127.0.0.1.
+function isLoopbackAddr(addr) {
+  if (!addr) return true;
+  if (addr === "::1") return true;
+  const v4 = addr.startsWith("::ffff:") ? addr.slice(7) : addr;
+  return v4 === "127.0.0.1";
+}
+function isLoopbackHost(h) {
+  return h === "127.0.0.1" || h === "localhost" || h === "::1" || h === "::ffff:127.0.0.1";
+}
+function defaultOpener(url) {
+  if (process.platform === "darwin") return ["open", url];
+  // Pass the URL as an argument, never through cmd.exe where host characters can be interpreted.
+  if (process.platform === "win32") return ["rundll32.exe", "url.dll,FileProtocolHandler", url];
+  if (process.platform === "linux" || process.platform === "freebsd" || process.platform === "openbsd") return ["xdg-open", url];
+  return null;
+}
+// Best effort by contract: diagnostics go to stderr, stdout keeps the
+// ready-plus-sends protocol untouched, and a failed launch never fails setup.
+function openPage(url, command) {
+  const argv = command ? [command, url] : defaultOpener(url);
+  if (!argv) { process.stderr.write(`grill: no browser opener on this platform; open ${url} by hand\n`); return; }
+  let child;
+  try {
+    child = spawn(argv[0], argv.slice(1), { detached: true, stdio: "ignore" });
+  } catch {
+    process.stderr.write(`grill: could not open ${url} automatically; open it by hand\n`);
+    return;
+  }
+  child.on("error", () => process.stderr.write(`grill: could not open ${url} automatically; open it by hand\n`));
+  child.unref();
+  process.stderr.write(`grill: opening ${url} in the browser\n`);
+}
 function cmdServe(o) {
   const session = mustSession(o);
+  const explicitHost = o.host !== undefined ? (o.host !== true ? String(o.host) : "") : null;
+  if (o.lan && explicitHost !== null) die("use --lan or --host <addr>, not both");
+  const openCommand = o["open-command"] !== undefined && o["open-command"] !== true ? String(o["open-command"]) : null;
+  if (o["open-command"] === true) die("--open-command needs a program path");
+  if (o.open && openCommand) die("use --open or --open-command <program>, not both");
+  let host = "127.0.0.1";
+  let needLanUrl = false;
+  if (o.lan) {
+    if (!lanIPv4()) die("--lan needs a LAN IPv4 interface and none was found");
+    host = "0.0.0.0";
+    needLanUrl = true;
+  } else if (explicitHost !== null) {
+    if (!explicitHost) die("--host needs an address");
+    host = explicitHost;
+  }
+  const anyInterface = host === "0.0.0.0" || host === "::";
+  // LAN exposure needs a per-serve secret: 128 bits minted fresh on every serve.
+  // It travels in the printed LAN URL (?t=...) and is required on every request
+  // whose socket is not loopback. Loopback keeps today's behavior untouched.
+  const exposed = needLanUrl || anyInterface || !isLoopbackHost(host);
+  const lanToken = exposed ? crypto.randomBytes(16).toString("hex") : null;
+  const tokenOk = (got) => {
+    if (!lanToken || typeof got !== "string" || !got) return false;
+    const a = Buffer.from(got), b = Buffer.from(lanToken);
+    return a.length === b.length && crypto.timingSafeEqual(a, b);
+  };
   const events = path.join(session, "events.jsonl");
   const stateFile = path.join(session, "state.json");
   const serverFile = path.join(session, "server.json");
@@ -142,14 +244,45 @@ function cmdServe(o) {
   let seq = lastSeq(events);
   let lastGoodState = null;
   let selfOrigins = [];
+  let allowedHosts = new Set();
 
-  const send = (res, code, body, type) => { res.writeHead(code, { "content-type": type, "cache-control": "no-store" }); res.end(body); };
+  const send = (res, code, body, type, extra = {}) => {
+    res.writeHead(code, { "content-type": type, "cache-control": "no-store", "referrer-policy": "no-referrer", "x-content-type-options": "nosniff", ...extra });
+    res.end(body);
+  };
   const json = (res, code, obj) => send(res, code, JSON.stringify(obj), "application/json");
-  const readBody = (req) => new Promise((resolve) => { let b = ""; req.on("data", (c) => { b += c; }); req.on("end", () => resolve(b)); });
+  const readBody = (req) => new Promise((resolve) => {
+    const chunks = []; let bytes = 0; let tooLarge = false;
+    req.on("data", (c) => {
+      bytes += c.length;
+      if (bytes > MAX_BODY_BYTES) { tooLarge = true; chunks.length = 0; resolve(null); }
+      else if (!tooLarge) chunks.push(c);
+    });
+    req.on("end", () => resolve(tooLarge ? null : Buffer.concat(chunks).toString("utf8")));
+  });
+  // Browsers set Origin on every POST, same-origin or not; reject a mismatch so another tab (or
+  // the sandboxed visual iframe, whose Origin is "null") can't forge a request. No Origin at all —
+  // curl, wait mode, this project's own tests — is still allowed. http://localhost:<port> is this
+  // same server, so that spelling passes too.
+  const originOk = (req) => { const o = req.headers.origin; return o === undefined || selfOrigins.includes(o); };
 
   const srv = http.createServer(async (req, res) => {
-    const { pathname } = new URL(req.url, "http://x");
-    if (req.method === "GET" && pathname === "/") return send(res, 200, fs.readFileSync(page), "text/html; charset=utf-8");
+    // Reject rebinding through another hostname, even on the loopback socket.
+    if (!allowedHosts.has(String(req.headers.host || "").toLowerCase())) {
+      return json(res, 403, { error: "unexpected Host header" });
+    }
+    const u = new URL(req.url, "http://x");
+    const { pathname } = u;
+    // Without the token a LAN neighbor could curl a send into the agent's
+    // monitor (no-Origin requests are allowed on loopback, where only local
+    // processes can reach the port). Gate every non-loopback socket, all paths.
+    if (lanToken && !isLoopbackAddr(req.socket.remoteAddress)) {
+      if (!tokenOk(u.searchParams.get("t"))) return json(res, 403, { error: "missing or invalid LAN token" });
+    }
+    if (req.method === "GET" && pathname === "/") {
+      const html = fs.readFileSync(page, "utf8").replace("__GRILL_THEME__", readTheme());
+      return send(res, 200, html, "text/html; charset=utf-8");
+    }
     if (req.method === "GET" && pathname === "/state") {
       // `patch` swaps state.json in atomically, but a hand-written file can be caught mid-write:
       // then serve the last parse that worked.
@@ -161,22 +294,31 @@ function cmdServe(o) {
     if (req.method === "GET" && pathname === "/visual") {
       const visual = path.join(session, "visual.html"); // written only by the agent; shown by the page in a sandboxed iframe
       if (!fs.existsSync(visual)) return json(res, 404, { error: "no visual" });
-      return send(res, 200, fs.readFileSync(visual), "text/html; charset=utf-8");
+      return send(res, 200, fs.readFileSync(visual), "text/html; charset=utf-8", {
+        "content-security-policy": "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; font-src 'none'; connect-src 'none'; form-action 'none'; base-uri 'none'",
+      });
     }
     if (req.method === "POST" && pathname === "/send") {
-      // Browsers set Origin on every POST, same-origin or not; reject a mismatch so another
-      // tab (or the sandboxed visual iframe, whose Origin is "null") can't forge a send. No
-      // Origin at all — curl, wait mode, this project's own tests — is still allowed. The page
-      // opened as http://localhost:<port> is this same server, so that spelling passes too.
-      const origin = req.headers.origin;
-      if (origin !== undefined && !selfOrigins.includes(origin)) return json(res, 403, { error: "cross-origin request rejected" });
+      if (!originOk(req)) return json(res, 403, { error: "cross-origin request rejected" });
+      const body = await readBody(req);
+      if (body === null) return json(res, 413, { error: "request body too large" });
       let parsed;
-      try { parsed = JSON.parse(await readBody(req)); } catch { return json(res, 400, { error: "body must be JSON" }); }
-      if (!parsed || !Array.isArray(parsed.actions) || parsed.actions.length === 0) return json(res, 400, { error: "actions must be a non-empty array" });
+      try { parsed = JSON.parse(body); } catch { return json(res, 400, { error: "body must be JSON" }); }
+      if (!parsed || !Array.isArray(parsed.actions) || parsed.actions.length === 0 || parsed.actions.length > 100) return json(res, 400, { error: "actions must contain 1–100 entries" });
       const line = JSON.stringify({ type: "send", seq: ++seq, at: new Date().toISOString(), session, actions: parsed.actions });
       fs.appendFileSync(events, line + "\n");
       process.stdout.write(line + "\n"); // this is what wakes the agent
       return json(res, 200, { ok: true, seq });
+    }
+    if (req.method === "POST" && pathname === "/theme") {
+      if (!originOk(req)) return json(res, 403, { error: "cross-origin request rejected" });
+      const body = await readBody(req);
+      if (body === null) return json(res, 413, { error: "request body too large" });
+      let t;
+      try { t = JSON.parse(body).theme; } catch {}
+      if (!THEMES.includes(t)) return json(res, 400, { error: "theme must be system, light or dark" });
+      writeJson(uiFile, { theme: t });
+      return json(res, 200, { ok: true });
     }
     json(res, 404, { error: "not found" });
   });
@@ -185,17 +327,31 @@ function cmdServe(o) {
   const explicit = o.port !== undefined && o.port !== true;
   let attempt = explicit ? Number(o.port) : rememberedPort(serverFile);
   srv.on("error", (e) => {
-    if (!srv.listening && !explicit && attempt !== 0 && e.code === "EADDRINUSE") { attempt = 0; srv.listen(0, "127.0.0.1"); return; }
+    if (!srv.listening && !explicit && attempt !== 0 && e.code === "EADDRINUSE") { attempt = 0; srv.listen(0, host); return; }
     die(`server error: ${e.message}`, 1);
   });
   srv.on("listening", () => {
     const { port } = srv.address();
-    const url = `http://127.0.0.1:${port}/`;
+    const display = anyInterface ? "127.0.0.1" : host;
+    const urlHost = (address) => address.includes(":") ? `[${address}]` : address;
+    let url = `http://${urlHost(display)}:${port}/`;
+    let lanUrl = null;
+    if (lanToken && (needLanUrl || anyInterface)) {
+      const lan = lanIPv4();
+      if (lan) lanUrl = `http://${lan}:${port}/?t=${lanToken}`;
+    } else if (lanToken) {
+      // Explicit --host with a non-loopback address: the primary URL is the LAN URL.
+      url = `http://${urlHost(display)}:${port}/?t=${lanToken}`;
+    }
     selfOrigins = [`http://127.0.0.1:${port}`, `http://localhost:${port}`];
-    writeJson(serverFile, { url, port, pid: process.pid, started: new Date().toISOString() });
-    print({ type: "ready", url, session });
+    if (lanUrl) selfOrigins.push(new URL(lanUrl).origin);
+    if (!anyInterface && display !== "127.0.0.1" && display !== "localhost") selfOrigins.push(`http://${urlHost(display)}:${port}`);
+    allowedHosts = new Set(selfOrigins.map((origin) => new URL(origin).host.toLowerCase()));
+    writeJson(serverFile, { url, port, pid: process.pid, started: new Date().toISOString(), host, ...(lanUrl ? { lanUrl } : {}) });
+    print({ type: "ready", url, session, ...(lanUrl ? { lanUrl } : {}) });
+    if (o.open || openCommand) openPage(url, openCommand);
   });
-  srv.listen(attempt, "127.0.0.1");
+  srv.listen(attempt, host);
   // server.json stays on exit on purpose: it remembers the port for the next serve, and
   // `url` checks the pid before trusting it.
   const bye = () => process.exit(0);
@@ -233,8 +389,12 @@ function cmdUrl(o) {
   const deadline = Date.now() + Number(o.timeout !== undefined && o.timeout !== true ? o.timeout : 5) * 1000;
   const tick = () => {
     try {
-      const { url, pid } = JSON.parse(fs.readFileSync(serverFile, "utf8"));
-      if (url && (!pid || alive(pid))) { process.stdout.write(url + "\n"); process.exit(0); }
+      const info = JSON.parse(fs.readFileSync(serverFile, "utf8"));
+      if (info.url && (!info.pid || alive(info.pid))) {
+        process.stdout.write(info.url + "\n");
+        if (o.all && info.lanUrl) process.stdout.write(info.lanUrl + "\n");
+        process.exit(0);
+      }
     } catch { /* not there yet */ }
     if (Date.now() >= deadline) die(`no running server for ${session}`, 1);
     setTimeout(tick, 100);
@@ -282,6 +442,7 @@ function stampTimes(p, state, now) {
   const out = { ...p };
   if (isObj(out.agent) && out.agent.status != null) out.agent = fill(out.agent, "since");
   if (isObj(out.finished)) out.finished = fill(out.finished, "at");
+  if ("discussion" in out) out.discussion = messages(out.discussion);
   if (Array.isArray(out.questions)) {
     out.questions = out.questions.map((q) => {
       if (!isObj(q)) return q;
@@ -358,6 +519,7 @@ function applyPatch(state, p, now) {
     else if (k === "visual") out.visual = mergeOne(out.visual, v, "visual", VISUAL_APPENDS);
     else if (k === "questions") out.questions = patchQuestions(out.questions, v);
     else if (k === "terms") out.terms = patchTerms(out.terms, v);
+    else if (k === "discussion") out.discussion = appendTo(out.discussion, v, "discussion");
     else out[k] = clean(v);
   }
   return out;
@@ -382,7 +544,7 @@ function validateState(s) {
     list.forEach((m, i) => need(isObj(m) && (m.who === "user" || m.who === "agent") && str(m.text) && (m.at === undefined || str(m.at)),
       `${where}[${i}] must be {"who":"user"|"agent","text":"…","at":"ISO"}`));
   };
-  for (const k of ["topic", "doc", "project", "created", "note"]) check(s, k, str, `${k} must be a string`);
+  for (const k of ["topic", "intent", "doc", "project", "created", "note"]) check(s, k, str, `${k} must be a string`);
   if ("finished" in s) {
     need(isObj(s.finished), 'finished must be an object ({"doc","visual","at"})');
     texts(s.finished, ["doc", "visual", "at"], "finished");
@@ -402,6 +564,7 @@ function validateState(s) {
       check(t, "avoid", strs, `${w}: avoid must be an array of strings`);
     });
   }
+  if ("discussion" in s) messages(s.discussion, "discussion");
   need(Array.isArray(s.questions), "questions must be an array");
   const ids = new Set();
   s.questions.forEach((q, i) => {
@@ -411,8 +574,10 @@ function validateState(s) {
     need(Number.isFinite(q.round), `${w}.round must be a number`);
     need(str(q.title), `${w}.title must be a string`);
     need(STATUSES.includes(q.status), `${w}.status must be one of ${STATUSES.join("|")}`);
-    need(isObj(q.rec), `${w}.rec must be an object ({"option","why"} or {"text","why"})`);
+    need(isObj(q.rec), `${w}.rec must be an object ({"option","why"}, {"options","why"} or {"text","why"})`);
     texts(q.rec, ["option", "text", "why"], `${w}.rec`);
+    check(q.rec, "options", strs, `${w}.rec.options must be an array of option letters`);
+    check(q, "multi", bool, `${w}.multi must be true or false`);
     check(q, "body", str, `${w}.body must be a string`);
     check(q, "deps", strs, `${w}.deps must be an array of question ids`);
     check(q, "options", (v) => Array.isArray(v) && v.every((x) => isObj(x) && str(x.k) && (!("text" in x) || str(x.text))),
@@ -420,6 +585,7 @@ function validateState(s) {
     if ("answer" in q) {
       need(isObj(q.answer) && ANSWER_KINDS.includes(q.answer.kind), `${w}.answer.kind must be one of ${ANSWER_KINDS.join("|")}`);
       texts(q.answer, ["option", "text"], `${w}.answer`);
+      check(q.answer, "options", strs, `${w}.answer.options must be an array of option letters`);
     }
     if ("explore" in q) {
       const e = q.explore;

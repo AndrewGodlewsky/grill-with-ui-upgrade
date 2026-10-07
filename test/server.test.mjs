@@ -2,9 +2,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawn, spawnSync, execFileSync } from "node:child_process";
-import { closeSync, mkdtempSync, openSync, readFileSync, readdirSync, realpathSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, closeSync, mkdtempSync, openSync, readFileSync, readdirSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
-import { tmpdir } from "node:os";
+import { request as httpRequest } from "node:http";
+import { networkInterfaces, tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -117,6 +118,38 @@ test("serve: /send rejects a mismatched Origin, allows same-origin and no-Origin
   assert.equal(readFileSync(join(session, "events.jsonl"), "utf8").trim().split("\n").length, 3, "only the three accepted sends landed");
 });
 
+test("serve: rejects unexpected Host headers and oversized requests", async (t) => {
+  const { session } = newSession(tmp("grill-boundary-"));
+  const s = await startServe(session); t.after(s.stop);
+  const badHost = await new Promise((resolve, reject) => {
+    const req = httpRequest(s.ready.url + "state", { headers: { host: "rebinding.example" } }, (res) => { res.resume(); resolve(res.statusCode); });
+    req.on("error", reject); req.end();
+  });
+  assert.equal(badHost, 403);
+  assert.equal((await fetch(s.ready.url + "state")).status, 200);
+  assert.equal((await post(s.ready.url, "x".repeat(1024 * 1024 + 1))).status, 413);
+  assert.equal(readFileSync(join(session, "events.jsonl"), "utf8"), "", "oversized input emits no agent event");
+});
+
+test("theme: POST /theme persists globally, is injected into every grill's page, and is origin-guarded", async (t) => {
+  const a = await startServe(newSession(tmp("grill-t1-")).session); t.after(a.stop);
+  const b = await startServe(newSession(tmp("grill-t2-")).session); t.after(b.stop);
+  assert.notEqual(new URL(a.ready.url).port, new URL(b.ready.url).port, "two grills on two ports");
+
+  const themeOf = async (url) => (await (await fetch(url)).text()).match(/<html[^>]*data-theme="([^"]+)"/)[1];
+  assert.equal(await themeOf(a.ready.url), "system", "defaults to system");
+  const setTheme = (url, theme, origin) =>
+    fetch(url + "theme", { method: "POST", headers: { "content-type": "application/json", ...(origin ? { origin } : {}) }, body: JSON.stringify({ theme }) });
+
+  assert.equal((await setTheme(a.ready.url, "dark")).status, 200);
+  assert.equal(await themeOf(a.ready.url), "dark", "the grill that set it sees it");
+  assert.equal(await themeOf(b.ready.url), "dark", "a grill on another port sees it too, no localStorage");
+
+  assert.equal((await setTheme(a.ready.url, "chartreuse")).status, 400, "an unknown theme is rejected");
+  assert.equal((await setTheme(a.ready.url, "light", "https://evil.example")).status, 403, "a foreign origin is rejected");
+  assert.equal(await themeOf(b.ready.url), "dark", "rejected writes changed nothing");
+});
+
 test("wait: blocks for a seq newer than --after (default: current last), prints it, exits 0; exit 3 on timeout", async (t) => {
   const { session } = newSession(tmp("grill-w-"));
   const s = await startServe(session); t.after(s.stop);
@@ -168,6 +201,10 @@ test("serve: /visual serves the session's visual.html (no-store), 404 JSON when 
   assert.equal(hit.status, 200);
   assert.match(hit.headers.get("content-type"), /^text\/html/);
   assert.equal(hit.headers.get("cache-control"), "no-store");
+  assert.equal(hit.headers.get("referrer-policy"), "no-referrer");
+  assert.equal(hit.headers.get("x-content-type-options"), "nosniff");
+  assert.match(hit.headers.get("content-security-policy"), /default-src 'none'/);
+  assert.match(hit.headers.get("content-security-policy"), /connect-src 'none'/);
   assert.equal(await hit.text(), html);
 });
 
@@ -217,12 +254,31 @@ test("sessions: lists this project's sessions newest first, unfinished by defaul
 
   const lines = run(["sessions"], { cwd }).split("\n").map((l) => JSON.parse(l));
   assert.deepEqual(lines.map((l) => l.session), [b.session, a.session]);
-  assert.deepEqual(lines[0], { session: b.session, id: b.id, topic: "Second topic", created: sb.created, finished: null, open: 2, answered: 1, handled: 2, lastSeq: 3 });
-  assert.deepEqual(lines[1], { session: a.session, id: a.id, topic: "First topic", created: stateOf(a.session).created, finished: null, open: 0, answered: 0, handled: 0, lastSeq: 0 });
+  assert.deepEqual(lines[0], { session: b.session, id: b.id, topic: "Second topic", intent: "", doc: "", created: sb.created, finished: null, open: 2, answered: 1, handled: 2, lastSeq: 3 });
+  assert.deepEqual(lines[1], { session: a.session, id: a.id, topic: "First topic", intent: "", doc: "", created: stateOf(a.session).created, finished: null, open: 0, answered: 0, handled: 0, lastSeq: 0 });
   const all = run(["sessions", "--all"], { cwd }).split("\n").map((l) => JSON.parse(l));
   assert.deepEqual(all.map((l) => l.session), [c.session, b.session, a.session]);
   assert.deepEqual(all[0].finished, { doc: "docs/x.md", at: "y" });
   assert.equal(run(["sessions"], { cwd: tmp("grill-empty-") }), "");
+});
+
+test("new --intent is stored and listed; patch replaces it whole; non-string intent is rejected", () => {
+  const cwd = tmp("grill-intent-");
+  const out = JSON.parse(run(["new", "--topic", "Auth", "--intent", "Decide how sessions remember a user across tabs", "--doc", "docs/auth-design.md"], { cwd }));
+  assert.equal(out.intent, "Decide how sessions remember a user across tabs");
+  const st = JSON.parse(readFileSync(join(out.session, "state.json"), "utf8"));
+  assert.equal(st.intent, "Decide how sessions remember a user across tabs");
+  const lines = run(["sessions"], { cwd }).split("\n").map((l) => JSON.parse(l));
+  assert.equal(lines.length, 1);
+  assert.equal(lines[0].intent, "Decide how sessions remember a user across tabs");
+  assert.equal(lines[0].doc, "docs/auth-design.md");
+
+  const session = seeded({ questions: [qn("q1", 1)] });
+  applied(session, { intent: "A clearer why for this grill" });
+  assert.equal(stateOf(session).intent, "A clearer why for this grill");
+  applied(session, { intent: null });
+  assert.ok(!("intent" in stateOf(session)));
+  rejected(session, { intent: 12 }, /intent/);
 });
 
 test("pending: prints the events past agent.handled, nothing when caught up", async (t) => {
@@ -388,6 +444,19 @@ test("patch: thread and visual.queued append; appended messages without at get t
   rejected(session, { visual: { queued: "not a list" } }, /queued/);
 });
 
+test("patch: general discussion appends, stamps messages, and rejects malformed entries", () => {
+  const session = seeded();
+  assert.deepEqual(stateOf(session).discussion, []);
+  applied(session, { discussion: [{ who: "user", text: "What is the overall goal?", at: T0 }] });
+  applied(session, { discussion: [{ who: "agent", text: "A usable design." }] });
+  const messages = stateOf(session).discussion;
+  assert.equal(messages.length, 2);
+  assert.equal(messages[0].at, T0);
+  assert.match(messages[1].at, ISO);
+  rejected(session, { discussion: { who: "user", text: "wrong shape" } }, /discussion/);
+  rejected(session, { discussion: [{ who: "other", text: "wrong role" }] }, /discussion/);
+});
+
 test("patch: the server stamps the times the agent leaves out; an explicit time in the patch always wins", () => {
   const rows = [{ option: "A", pros: ["p"], cons: ["c"] }];
   const session = seeded({
@@ -550,6 +619,10 @@ test("patch: every field the page renders must have the shape the render reads, 
   rejected(session, { questions: [{ id: "q1", rec: { text: 5, why: "w" } }] }, /q1\.rec\.text/);
   rejected(session, { questions: [{ id: "q1", status: "answered", answer: { kind: "option", option: 2 } }] }, /q1\.answer\.option/);
   rejected(session, { questions: [{ id: "q1", status: "answered", answer: { kind: "text", text: boom } }] }, /q1\.answer\.text/);
+  // A multi question's sets are mapped as lists of letters: a string set or a non-string letter throws.
+  rejected(session, { questions: [{ id: "q1", multi: "yes" }] }, /q1\.multi/);
+  rejected(session, { questions: [{ id: "q1", rec: { options: "A", why: "w" } }] }, /q1\.rec\.options/);
+  rejected(session, { questions: [{ id: "q1", status: "answered", answer: { kind: "option", options: ["A", 2] } }] }, /q1\.answer\.options/);
   rejected(session, { visual: { note: boom } }, /visual\.note/);
   rejected(session, { visual: { version: 2, at: 5 } }, /visual\.at/);
   rejected(session, { visual: { drawing: { since: boom, seq: 2 } } }, /visual\.drawing/);
@@ -564,6 +637,8 @@ test("patch: every field the page renders must have the shape the render reads, 
       { id: "q1", status: "answered", answer: { kind: "text", text: "Neither, a third way" }, rec: { text: "t", why: "w" },
         explore: { rows: [{ option: "A", pros: ["p"], cons: [] }, { option: "B", pros: [], cons: ["c"] }] } },
       { id: "q2", round: 2, title: "No options", body: "b", rec: { why: "only a why" } },
+      { id: "q3", round: 2, title: "Multi", body: "b", multi: true, options: [{ k: "A", text: "a" }, { k: "B", text: "b" }],
+        rec: { options: ["A", "B"], why: "w" }, status: "answered", answer: { kind: "accept", options: ["A", "B"] } },
     ],
     visual: { version: 2, note: "v2: bigger", drawing: { seq: 3 } },
     finished: { doc: "docs/x-design.md", visual: "docs/x-visual.html" },
@@ -667,4 +742,85 @@ test("cli: an unknown subcommand prints usage and exits 2, including inherited n
     assert.equal(r.stdout, "", `${name} must print nothing on stdout`);
     assert.match(r.stderr, /^grill: usage: server\.mjs [^\n]+\n$/, `${name} must print one usage line`);
   }
+});
+
+test("serve: loopback by default — no lanUrl in ready or server.json, url prints one line", async (t) => {
+  const { session } = newSession(tmp("grill-loop-"));
+  const s = await startServe(session); t.after(s.stop);
+  assert.ok(!("lanUrl" in s.ready), "no LAN URL promised when listening on loopback only");
+  const info = JSON.parse(readFileSync(join(session, "server.json"), "utf8"));
+  assert.ok(!("lanUrl" in info));
+  assert.equal(info.host, "127.0.0.1");
+  assert.equal(run(["url", "--session", session]), s.ready.url);
+});
+
+test("serve --lan: ready and server.json carry a tokenized LAN URL; the LAN origin is accepted", async (t) => {
+  const all = Object.values(networkInterfaces()).flat().filter((a) => a && a.family === "IPv4" && !a.internal).map((a) => a.address);
+  if (!all.length) { t.skip("no LAN IPv4 interface on this machine"); return; }
+  const rfc1918 = (ip) => ip.startsWith("10.") || ip.startsWith("192.168.") || (() => { const m = ip.match(/^172\.(\d+)\./); return !!m && Number(m[1]) >= 16 && Number(m[1]) <= 31; })();
+  const expected = all.find(rfc1918) || all[0]; // RFC 1918 first, so a Tailscale 100.x never wins over Wi-Fi
+  const { session } = newSession(tmp("grill-lan-"));
+  const s = await startServe(session, ["--lan"]); t.after(s.stop);
+  assert.match(s.ready.url, /^http:\/\/127\.0\.0\.1:\d+\/$/, "the primary URL stays localhost");
+  assert.match(s.ready.lanUrl, new RegExp(`^http://${expected.replace(/\./g, "\\.")}:\\d+/\\?t=[0-9a-f]{32}$`), "the LAN URL carries a 128-bit token and prefers RFC 1918");
+  const info = JSON.parse(readFileSync(join(session, "server.json"), "utf8"));
+  assert.equal(info.lanUrl, s.ready.lanUrl);
+  assert.equal(info.host, "0.0.0.0");
+
+  const token = new URL(s.ready.lanUrl).searchParams.get("t");
+  const lanBase = s.ready.lanUrl.replace(/\/\?t=.*$/, "/");
+  const lan = (p, tok = token) => lanBase + p + (tok ? `?t=${tok}` : "");
+  const lanOrigin = new URL(s.ready.lanUrl).origin;
+
+  assert.equal((await fetch(s.ready.url + "state")).status, 200, "localhost still serves without a token");
+  assert.equal((await fetch(lan("state"))).status, 200, "the LAN URL serves with the token");
+  assert.equal((await fetch(lanBase + "state")).status, 403, "the LAN address without a token is rejected");
+  assert.equal((await fetch(lan("state", "wrong"))).status, 403, "a wrong token is rejected");
+  const actions = [{ q: "q1", type: "defer" }];
+  const sendAs = (url, origin) => fetch(url, { method: "POST", headers: { "content-type": "application/json", origin }, body: JSON.stringify({ actions }) });
+  assert.equal((await sendAs(lan("send"), lanOrigin)).status, 200, "the LAN origin is accepted with the token");
+  assert.equal((await sendAs(lanBase + "send", lanOrigin)).status, 403, "a tokenless LAN send is rejected, curl included");
+  assert.equal((await sendAs(lan("send"), "https://evil.example")).status, 403, "a foreign origin is still rejected");
+  assert.equal((await sendAs(s.ready.url + "send", "https://evil.example")).status, 403, "a foreign origin is still rejected on loopback");
+  assert.equal((await fetch(lanBase)).status, 403, "the LAN page without a token is rejected");
+  assert.equal((await fetch(lan("", token))).status, 200, "the LAN page serves with the token");
+  assert.equal((await fetch(lanBase + "events")).status, 403, "LAN /events without a token is rejected");
+  assert.equal((await fetch(lan("events"))).status, 200, "LAN /events serves with the token");
+  assert.equal((await fetch(lanBase + "visual")).status, 403, "LAN /visual without a token is rejected");
+  assert.equal((await fetch(lan("visual"))).status, 404, "LAN /visual with the token passes the gate (404, no visual yet)");
+  await s.out.nth(2);
+
+  assert.deepEqual(run(["url", "--session", session, "--all"]).split("\n"), [s.ready.url, s.ready.lanUrl], "url --all prints both");
+  assert.equal(run(["url", "--session", session]), s.ready.url, "plain url still prints one line");
+});
+
+test("serve: --lan with --host, and --open with --open-command, are rejected with one stderr line", () => {
+  const { session } = newSession(tmp("grill-flag-"));
+  for (const extra of [["--lan", "--host", "127.0.0.1"], ["--lan", "--host"], ["--host"], ["--open", "--open-command", "true"]]) {
+    const r = spawnSync(process.execPath, [SERVER, "serve", "--session", session, ...extra], { encoding: "utf8", env });
+    assert.notEqual(r.status, 0);
+    assert.equal(r.stdout, "", "nothing on stdout when the flags conflict");
+    assert.match(r.stderr, /^grill: [^\n]+\n$/, "exactly one grill: line on stderr");
+  }
+});
+
+test("serve --open-command: the program runs with the live URL and the stdout protocol is untouched", async (t) => {
+  const dir = tmp("grill-open-");
+  const seen = join(dir, "opened.txt");
+  const probe = join(dir, "probe.mjs");
+  writeFileSync(probe, `#!/usr/bin/env node\nimport { appendFileSync } from "node:fs";\nappendFileSync(${JSON.stringify(seen)}, process.argv[2] + "\\n");\n`);
+  chmodSync(probe, 0o755);
+  const { session } = newSession(dir);
+  const s = await startServe(session, ["--open-command", probe]); t.after(s.stop);
+  assert.match(s.ready.url, /^http:\/\/127\.0\.0\.1:\d+\/$/);
+
+  await post(s.ready.url, { actions: [{ q: "q1", type: "defer" }] });
+  assert.equal(JSON.parse(await s.out.nth(2)).seq, 1, "stdout still carries ready then sends, nothing else");
+  if (process.platform === "win32") return; // shebang probes do not execute there; the protocol asserts above are the portable part
+  let got = "";
+  for (let i = 0; i < 40 && !got; i++) {
+    await sleep(250);
+    try { got = readFileSync(seen, "utf8").trim(); } catch { /* probe has not run yet */ }
+  }
+  assert.equal(got, s.ready.url, "the program received the live URL as its argument");
 });

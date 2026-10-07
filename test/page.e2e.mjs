@@ -2,7 +2,7 @@
 //   PLAYWRIGHT_PKG=/path/to/node_modules/@playwright/test/index.mjs node test/page.e2e.mjs
 // or, with @playwright/test installed next to this repo, just `node test/page.e2e.mjs`.
 import { spawn, execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -52,6 +52,9 @@ page.on("console", (m) => { if (m.type() === "error") errors.push(m.text()); });
 page.on("pageerror", (e) => errors.push(String(e)));
 const results = [];
 const check = (name, ok, extra = "") => { results.push({ name, ok, extra }); if (!ok) console.log("FAIL", name, extra); };
+const evidence = process.env.GRILL_EVIDENCE_DIR;
+if (evidence) mkdirSync(evidence, { recursive: true });
+const capture = async (name) => { if (evidence) await page.screenshot({ path: join(evidence, name), fullPage: true }); };
 
 try {
   await page.goto(url);
@@ -65,6 +68,44 @@ try {
   check("system fonts only (no Google Fonts link)", (await page.content()).includes("fonts.googleapis") === false);
   const geo = await page.evaluate(() => { const r = (sel) => document.querySelector(sel).getBoundingClientRect(); return { main: r("main"), footer: r("footer"), h: innerHeight }; });
   check("layout fills the viewport (content row stretches, footer sits at the bottom)", Math.abs(geo.footer.bottom - geo.h) < 2 && Math.abs(geo.main.bottom - geo.footer.top) < 2 && geo.main.height > 600, JSON.stringify(geo));
+  check("no intent line when the session has none", await page.locator("#intent.show").count() === 0);
+  check("tab title is topic-only without intent", (await page.title()) === "grill · E2E topic");
+  const initialWidth = await page.locator("aside").evaluate((el) => el.getBoundingClientRect().width);
+  await page.locator("#resize-handle").press("ArrowLeft");
+  const wider = await page.locator("aside").evaluate((el) => el.getBoundingClientRect().width);
+  check("discussion width changes with keyboard", wider > initialWidth);
+  await page.reload(); await page.locator(".item").first().waitFor();
+  check("discussion width persists across reload", Math.abs((await page.locator("aside").evaluate((el) => el.getBoundingClientRect().width)) - wider) < 2);
+  await page.evaluate(() => { localStorage.removeItem("grill:discussion-width"); document.body.style.removeProperty("--discussion-width"); });
+  await page.locator("#general-toggle").click();
+  await page.locator("#general-in").fill("How does this fit together?");
+  await page.locator("#stage-general").click();
+  check("general discussion stages outside a question", (await page.locator("aside .msg.staged").textContent()).includes("How does this fit together?") && (await page.locator("#send").textContent()) === "Send 1 to Agent");
+  await page.reload(); await page.locator("#general-in").waitFor();
+  check("general discussion staging survives reload", await page.locator("aside .msg.staged").count() === 1);
+  await page.locator("[data-rmg]").click();
+  await page.locator("#general-toggle").click();
+  check("removing a general message clears staging", await page.locator("#send").isDisabled());
+  const withIntent = fixture(); withIntent.intent = "Decide how sessions remember a user across tabs"; writeState(withIntent);
+  await page.waitForFunction(() => document.getElementById("intent").classList.contains("show"));
+  check("intent line shows under the topic", (await page.locator("#intent.show").textContent()) === "Decide how sessions remember a user across tabs");
+  check("tab title carries the intent", (await page.title()) === "grill · E2E topic — Decide how sessions remember a user across tabs");
+  writeState(fixture());
+  await page.waitForFunction(() => !document.getElementById("intent").classList.contains("show"));
+  check("clearing intent hides the line again", await page.locator("#intent.show").count() === 0);
+  const long = fixture();
+  long.intent = "Decide whether guests check out without an account. If not, settle where the account gets created. Returns and support need an account either way, so the follow-up settles ownership and the retry path stays idempotent across both flows.";
+  writeState(long);
+  await page.waitForFunction(() => document.getElementById("intent").classList.contains("clamped"));
+  check("long intent clamps to one line with a pointer", await page.locator("#intent.show.clamped").count() === 1);
+  await page.locator("#intent.show").click();
+  await page.waitForFunction(() => document.getElementById("intent").classList.contains("open"));
+  check("click expands the full intent", (await page.locator("#intent.show.open").textContent()) === long.intent);
+  await page.locator("#intent.show").click();
+  await page.waitForFunction(() => !document.getElementById("intent").classList.contains("open"));
+  check("click collapses back to one line", await page.locator("#intent.show.clamped").count() === 1);
+  writeState(fixture());
+  await page.waitForFunction(() => !document.getElementById("intent").classList.contains("show"));
 
   await page.locator("#terms-toggle").click();
   check("terms panel shows the term and its avoid list", (await page.locator("#terms").textContent()).includes("Avoid: submit, reply"));
@@ -78,6 +119,19 @@ try {
   await page.locator("#thread-in").fill("Would Alpha be simpler?");
   await page.locator("#stage-thread").click();
   check("staged count 2", (await page.locator("#send").textContent()) === "Send 2 to Agent");
+  // ⌘↩ in a compose box stages the draft; a second ⌘↩ sends it (issue #12)
+  await page.locator(".item", { hasText: "Q4" }).click();
+  await page.locator("#free").fill("Short and sweet");
+  await page.locator("#free").press("Meta+Enter");
+  check("cmd+enter stages free text", (await page.locator(".staged-line").textContent()).includes("Short and sweet") && (await page.locator("#send").textContent()) === "Send 3 to Agent");
+  await page.locator("#clear-staged").click();
+  check("clear removes the staged text", await page.locator(".staged-line").count() === 0 && (await page.locator("#send").textContent()) === "Send 2 to Agent");
+  await page.locator(".item", { hasText: "Q3" }).click();
+  await page.locator("#thread-in").fill("Keyboard staged thread");
+  await page.locator("#thread-in").press("Meta+Enter");
+  check("cmd+enter stages a discussion message", await page.locator("aside .msg.staged").count() === 2 && (await page.locator("#send").textContent()) === "Send 3 to Agent");
+  await page.locator("aside .msg.staged [data-rm]").last().click();
+  check("staged thread removed again", await page.locator("aside .msg.staged").count() === 1 && (await page.locator("#send").textContent()) === "Send 2 to Agent");
   await page.locator("#explore").click();
   const exploreEv = JSON.parse(await srv.nth(2));
   check("explore sends immediately as its own event", exploreEv.seq === 1 && JSON.stringify(exploreEv.actions) === JSON.stringify([{ q: "q3", type: "explore" }]), JSON.stringify(exploreEv.actions));
@@ -86,7 +140,7 @@ try {
   check("footer shows the explore send as sent", (await page.locator("#staged-list").textContent()).includes("Sent #1"));
   check("nav shows staged", (await page.locator(".item.selected .mark").textContent()) === "staged");
   await page.locator("#free").fill("draft text that should survive reload");
-  await page.screenshot({ path: "/tmp/grill-v1.png" });
+  await capture("grill-staged.png");
 
   await page.reload();
   await page.locator(".item").first().waitFor();
@@ -122,6 +176,11 @@ try {
   check("send label counts 3", (await page.locator("#send").textContent()) === "Send 3 to Agent");
 
   check("header has a Visualize button before any visual exists", await page.locator("header #visualize").count() === 1 && (await page.locator("#visualize").textContent()) === "Visualize" && await page.locator("body.visualize").count() === 0);
+  check("header has a Use subagent checkbox beside Visualize, checked by default", await page.locator("header #use-subagent").isVisible() && await page.locator("#use-subagent").isChecked() && (await page.locator("label[for=use-subagent]").textContent()).trim() === "Use subagent");
+  check("the info bubble explains the trade-off", (await page.locator("#subagent-info").getAttribute("data-tip")) === "Using subagents frees up your main context for grilling. You can switch this off once you are done grilling to make the visualization build faster." && (await page.locator("#subagent-info").getAttribute("aria-label")) === "Using subagents frees up your main context for grilling. You can switch this off once you are done grilling to make the visualization build faster.");
+  await page.locator("#subagent-info").focus();
+  await capture("subagent-default-tooltip.png");
+  await page.locator("#subagent-info").blur();
 
   // Discussion scroll, first on a panel that cannot scroll at all: nothing there is "at the
   // bottom", so long content arriving is read from its first line. The pros and cons table is
@@ -235,7 +294,7 @@ try {
   // visualize: immediate event; the agent acknowledges at once and draws in the background, so grilling continues
   await page.locator("#visualize").click();
   const visEv = JSON.parse(await srv.nth(4));
-  check("visualize sends immediately as its own event", visEv.seq === 3 && JSON.stringify(visEv.actions) === JSON.stringify([{ type: "visualize" }]), JSON.stringify(visEv.actions));
+  check("visualize sends immediately as its own event", visEv.seq === 3 && JSON.stringify(visEv.actions) === JSON.stringify([{ type: "visualize", subagent: true }]), JSON.stringify(visEv.actions));
   await page.waitForFunction(() => document.getElementById("visualize").textContent.includes("Visualizing…"));
   check("visualize in flight: disabled with a spinner, still on the questions view", await page.locator("#visualize").isDisabled() && await page.locator("#visualize .spin").count() === 1 && await page.locator("body.visualize").count() === 0);
   // the agent acknowledges the send at once: handled = 3, a version-0 visual carrying `drawing`, no file yet
@@ -279,13 +338,17 @@ try {
   await page.locator("#feedback-in").fill("Make the list narrower");
   await page.locator("#stage-feedback").click();
   check("feedback staged: shown in the panel and in the footer", await page.locator("aside .msg.staged").count() === 1 && (await page.locator("#staged-list").textContent()).includes("visual +1 msg"));
+  check("Use subagent stays in the header while a visual is shown", await page.locator("#use-subagent").isVisible());
+  await page.locator("#use-subagent").uncheck();
   await page.reload();
   await page.waitForFunction(() => document.body.classList.contains("visualize"), null, { timeout: 5000 });
   check("visualize view and staged feedback survive reload", await page.locator("aside .msg.staged").count() === 1 && (await page.locator("#staged-list").textContent()).includes("visual +1 msg"));
+  check("Use subagent stays unchecked across a reload", !(await page.locator("#use-subagent").isChecked()));
+  await capture("subagent-unchecked-after-reload.png");
   await page.locator("#send").click();
   await page.waitForFunction(() => document.getElementById("staged-list").textContent.includes("Sent #5"));
   const fbEv = JSON.parse(await srv.nth(6));
-  check("send carries the visual feedback action", fbEv.seq === 5 && fbEv.actions.some((a) => a.type === "visual-feedback" && a.text === "Make the list narrower"), JSON.stringify(fbEv.actions));
+  check("send carries the visual feedback action", fbEv.seq === 5 && fbEv.actions.some((a) => a.type === "visual-feedback" && a.text === "Make the list narrower" && a.subagent === false), JSON.stringify(fbEv.actions));
   check("pending feedback shown as sending", await page.locator("aside .msg.pending").count() === 1);
   // the agent answers the feedback at once and redraws in the background: version still 1, `drawing` set
   const v1at = s.visual.at;
@@ -317,11 +380,13 @@ try {
   await page.locator("#thread-in").fill("final note"); await page.locator("#stage-thread").click();
   await page.locator("#finish").click();
   check("inline confirm shown", await page.locator("#finish-yes").count() === 1);
+  check("confirm keeps the green but stops blinking", await page.locator("#finish-yes.ready").count() === 1
+    && (await page.locator("#finish-yes").evaluate((el) => getComputedStyle(el).animationName)) === "none");
   await page.locator("#finish-no").click();
   check("cancel keeps the finish button", await page.locator("#finish").count() === 1 && await page.locator("#finish-yes").count() === 0);
   await page.locator("#finish").click(); await page.locator("#finish-yes").click();
   const finEv = JSON.parse(await srv.nth(7));
-  check("finish fires immediately, staged actions first, finish last", finEv.seq === 6 && finEv.actions.length === 2 && finEv.actions[0].type === "thread" && finEv.actions[0].text === "final note" && finEv.actions[1].type === "finish", JSON.stringify(finEv.actions));
+  check("finish fires immediately, staged actions first, finish last", finEv.seq === 6 && finEv.actions.length === 2 && finEv.actions[0].type === "thread" && finEv.actions[0].text === "final note" && finEv.actions[1].type === "finish" && finEv.actions[1].subagent === false, JSON.stringify(finEv.actions));
   await page.waitForFunction(() => { const f = document.getElementById("finish"); return !!f && f.textContent.includes("Finishing…"); });
   check("finish button shows finishing; staging cleared", await page.locator("#finish").isDisabled() && await page.locator("#finish .spin").count() === 1 && (await page.locator("#send").textContent()) === "Send to Agent");
 
@@ -344,8 +409,42 @@ try {
   check("finished banner names the doc and the visual", (await page.locator("#banner").textContent()).includes("docs/e2e-design.md") && (await page.locator("#banner").textContent()).includes("docs/e2e-visual.html"));
   await page.locator("#visualize").click();
   check("finished: visual still viewable, composer and regenerate gone", await page.locator("body.visualize").count() === 1 && await page.locator("#feedback-in").count() === 0 && await page.locator("#regen").count() === 0);
+  check("finished: Use subagent is hidden, nothing left to draw", await page.locator("#use-subagent").isHidden());
+  await capture("subagent-hidden-finished.png");
+  if (evidence) writeFileSync(join(evidence, "page-events.jsonl"), readFileSync(join(session, "events.jsonl")));
   await page.locator("#visualize").click();
   check("staging locked when finished", await page.locator("#free").count() === 0 && await page.locator("#thread-in").count() === 0 && await page.locator("#finish").count() === 0);
+
+  // multi question: options toggle into a set, the recommendation is a set, the send carries options
+  s = fixture(); s.agent = { status: "waiting", since: new Date().toISOString(), handled: 6 };
+  s.questions.push({ id: "q5", round: 4, deps: [], title: "Which channels?", body: "Any mix.", multi: true,
+    options: [{ k: "A", text: "Email" }, { k: "B", text: "SMS" }, { k: "C", text: "Push" }],
+    rec: { options: ["A", "C"], why: "Both are free to send." }, status: "open", durable: false, updated: false, thread: [] });
+  s.questions.push({ id: "q6", round: 4, deps: [], title: "Answered multi", body: "Done.", multi: true,
+    options: [{ k: "A", text: "One" }, { k: "B", text: "Two" }, { k: "C", text: "Three" }],
+    rec: { options: ["A"], why: "Fine." }, status: "answered", answer: { kind: "option", options: ["A", "B"] }, durable: false, updated: false, thread: [] });
+  writeState(s);
+  await page.waitForFunction(() => !document.getElementById("banner").classList.contains("done"));
+  await page.locator(".item", { hasText: "Q5" }).click();
+  check("multi: hint shown, both recommended options marked, why names the set", await page.locator(".multi-hint").count() === 1 && await page.locator(".opt.rec").count() === 2 && (await page.locator(".why b").textContent()) === "Why A + C.");
+  await page.locator('.opt[data-opt="A"]').click();
+  await page.locator('.opt[data-opt="B"]').click();
+  check("multi: two clicks stage two options", await page.locator(".opt.staged").count() === 2 && (await page.locator(".staged-line").textContent()).includes("Staged: options A + B") && (await page.locator("#staged-list").textContent()).includes("Q5 → A + B"));
+  await page.locator('.opt[data-opt="B"]').click();
+  await page.locator('.opt[data-opt="C"]').click();
+  check("multi: toggling to the recommended set stages an accept", (await page.locator(".staged-line").textContent()).includes("Staged: accept A + C"));
+  await page.locator('.opt[data-opt="A"]').click(); await page.locator('.opt[data-opt="C"]').click();
+  check("multi: an emptied set unstages the answer", await page.locator(".staged-line").count() === 0 && await page.locator(".item .mark.staged").count() === 0);
+  await page.locator("#accept-rec").click();
+  check("multi: accept link stages the recommended set", (await page.locator(".staged-line").textContent()).includes("Staged: accept A + C"));
+  await page.locator(".item", { hasText: "Q6" }).click();
+  check("multi: recorded answer shows every chosen option, nav mark names the set", await page.locator(".opt.chosen").count() === 2 && (await page.locator(".item", { hasText: "Q6" }).locator(".mark").textContent()).includes("A + B"));
+  await page.locator('.opt[data-opt="C"]').click();
+  check("multi: changing an answer starts from the recorded set", await page.locator(".opt.staged").count() === 3 && await page.locator(".opt.chosen").count() === 0);
+  await page.locator("#send").click();
+  const multiEv = JSON.parse(await srv.nth(2));
+  const a5 = multiEv.actions.find((a) => a.q === "q5"), a6 = multiEv.actions.find((a) => a.q === "q6");
+  check("multi: send carries the option sets", a5 && a5.kind === "accept" && JSON.stringify(a5.options) === '["A","C"]' && a6 && a6.kind === "option" && JSON.stringify(a6.options) === '["A","B","C"]', JSON.stringify(multiEv.actions));
 
   // The server-gone step above produces ERR_CONNECTION_REFUSED fetch failures by design.
   const real = errors.filter((e) => !e.includes("ERR_CONNECTION_REFUSED"));
