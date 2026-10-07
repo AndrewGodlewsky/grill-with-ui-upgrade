@@ -3,7 +3,7 @@
 A skill for coding agents that moves a "grilling" design interview out of the terminal and
 onto a local browser page. The agent asks its questions as cards, each with lettered options
 and a highlighted recommendation. You answer them in any order, defer or reopen them, discuss
-any single one in its own thread without losing the rest of the session, and press one
+any single one in its own thread or discuss the whole grill, and press one
 button, **Send to Agent**, to ship everything you staged as a single turn. At the end the
 agent writes an exhaustive design doc for the topic.
 
@@ -75,9 +75,12 @@ In any project:
 /grill-with-ui <topic you want grilled>
 ```
 
-The agent prints a URL. Open it. Answer by clicking an option (the recommended one is
+The agent attempts to open the localhost page in an external browser and prints its URL.
+If the window does not open, use that URL manually. Answer by clicking an option (the recommended one is
 outlined) or writing free text. A card marked "Pick one or more" takes any number of
-options, and each click toggles one. Start a discussion in the right-hand panel; use **Defer** and **Reopen** on a card when
+options, and each click toggles one. Start a discussion in the right-hand panel, drag its
+left edge to adjust its width, or choose **General discussion** for a conversation across
+the whole grill. Use **Defer** and **Reopen** on a card when
 you want to. Everything you do is staged (and survives a reload) until you press **Send N to
 Agent** (⌘↩). The one exception is **Explore deeper** next to a question's title: it goes to
 the agent the moment you click it, and the pros and cons table for that question's options
@@ -127,11 +130,13 @@ and the page tab you still have open reconnects on its own.
 Session state lives outside your repo, so there is nothing to gitignore:
 
 ```
-~/.grill-with-ui/sessions/<project-key>/<YYYYMMDD-HHMMSS>/
-  state.json     written only by the agent, through `patch` (questions, recommendations, threads, status)
-  events.jsonl   appended only by the page, one line per Send
-  server.json    url, port and pid of the running server
-  visual.html    the prototype or diagram, served at /visual
+~/.grill-with-ui/
+  ui.json        global UI prefs shared by every grill (theme)
+  sessions/<project-key>/<YYYYMMDD-HHMMSS>/
+    state.json     written only by the agent, through `patch` (questions, recommendations, threads, status)
+    events.jsonl   appended only by the page, one line per Send
+    server.json    url, port and pid of the running server
+    visual.html    the prototype or diagram, served at /visual
 ```
 
 `<project-key>` is the git common root of the project with slashes turned into dashes, so
@@ -139,6 +144,7 @@ every worktree of a repo sees the same sessions; outside git it is the working d
 
 In this repo: `server.mjs` (the server and CLI), `page.html` (the page), `SKILL.md` (the
 prompt the agent follows), `test/`, and `design/` + `docs/design.md` (how it was designed).
+The core skill's threat model and audit findings are in `docs/security-audit.md`.
 `design/record-demo.mjs` re-records the GIF above by driving the real page; it needs
 Playwright and `ffmpeg`.
 
@@ -146,13 +152,28 @@ Playwright and `ffmpeg`.
 
 ```
 node server.mjs new      --topic T [--doc P]                  create a session, print its folder
-node server.mjs serve    --session DIR [--port N]             serve the page; print one line per Send
+node server.mjs serve    --session DIR [--port N] [--host ADDR | --lan] [--open | --open-command P]
+                                                          serve the page; print one line per Send
 node server.mjs sessions [--all]                               list this project's sessions
 node server.mjs pending  --session DIR                         print sends past agent.handled
 node server.mjs wait     --session DIR [--after N] [--timeout S]  block until the next send (exit 3 on timeout)
-node server.mjs url      --session DIR [--timeout S]           print the running server's url
+node server.mjs url      --session DIR [--timeout S] [--all]   print the running server's url (--all adds the LAN URL)
 node server.mjs patch    --session DIR [--file P]              apply a JSON patch (stdin or P) to state.json
 ```
+
+Loopback is the default. Pass `--lan` when you answer from a second machine on the
+same network: the server listens on all interfaces and `url` prints a LAN address
+next to localhost. Without `--lan` no LAN socket opens and no LAN URL prints, so a grill
+never reaches beyond its own machine by accident. LAN mode mints a random per-serve
+token and puts it in the LAN URL (`http://<ip>:<port>/?t=<token>`); every request from a
+non-loopback address needs it, including `/`, `/state`, `/visual`, `/events`, and `/send`,
+while loopback requests work exactly as before. Treat the LAN URL like a password: anyone
+with it can read the session and send to the agent, so share it only with the answering
+machine. Other interfaces, including VPNs, may also be reachable if the host firewall
+allows them. The token is fresh on every serve. The skill uses `--open` on startup to attempt
+opening the live localhost page after setup. It is best effort; without a usable opener,
+use the printed URL manually. `--open-command P` runs `P` with the URL as its argument
+instead of the OS opener.
 
 `patch` merges by the rules in `SKILL.md` ("Patching state.json"). A bad patch exits
 non-zero and leaves the file untouched; a good one prints one short summary line, never the

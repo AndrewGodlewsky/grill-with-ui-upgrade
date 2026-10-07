@@ -66,7 +66,7 @@ The patch is shaped like `state.json` (schema at the end):
   `status: "open"`, `deps: []`, `options: []`, `thread: []`, `durable: false`, and
   `updated: false` are filled in. An unknown id without `title` is an error, not a new
   question (ids are case-sensitive: `q7`, never `Q7`).
-- `thread` (on a question and on `visual`) and `visual.queued` append: list only the new
+- `thread` (on a question and on `visual`), top-level `discussion`, and `visual.queued` append: list only the new
   messages or bullets.
 - `terms` is keyed by `term`: a known term is replaced whole, a new one appended.
 - Every other key (`note`, `intent`, `finished`, `doc`, …) is replaced whole.
@@ -112,11 +112,22 @@ GRILL_PATCH
    each with lettered options, one recommendation, and a one-paragraph why, plus any `terms`
    and `"agent": { "status": "waiting" }`.
 3. Open a **persistent Monitor** (`persistent: true`) whose command is
-   `node $SKILL/server.mjs serve --session <session>`, description `grill page: <topic>`.
+   `node $SKILL/server.mjs serve --session <session> --open`, description `grill page: <topic>`.
    No Monitor tool in your harness (Codex, Gemini CLI, Cursor, Copilot, others)? Use
    "Wait mode" at the end of this file for this step and for every wait after it.
-4. Run `node $SKILL/server.mjs url --session <session>`; it prints the URL.
-5. Print ONE line: the URL, how many questions wait, and the doc path (say the user can change
+   The `--open` flag attempts to launch the live localhost page in an external browser
+   after the server is ready. It is best effort: keep the server and listener active if
+   opening fails, and give the user the printed URL to open manually. If a browser tab
+   for this grill is already open on resume, omit `--open` to let that tab reconnect.
+   `--lan` listens on all interfaces and prints a LAN URL next to the localhost one
+   (for answering from a second machine on the same network; without it no LAN socket
+   opens and no LAN URL prints; the LAN URL carries a per-serve `?t=` token that every
+   non-loopback request must present, so share that URL only with the answering machine.
+   Other interfaces, including VPNs, may be reachable if the firewall allows them).
+4. Run `node $SKILL/server.mjs url --session <session>`; it prints the URL
+   (with `--lan` add `--all` so it prints the LAN URL on the second line).
+5. Print ONE line: the URL (both URLs with `--lan`, the LAN one exactly as printed,
+   token included, since the second machine must open that full address), how many questions wait, and the doc path (say the user can change
    the path by typing in the terminal). Return to listening.
 
 ## Resume (`/grill-with-ui resume`)
@@ -155,7 +166,7 @@ described there, then return to listening.
 1. Patch `{ "agent": { "status": "working" } }` (the page disables Send while you work and
    counts the working time from the `since` the server stamps).
 2. Work through each item of `actions` in order, collecting its changes for the step 6
-   patch (every item but `finish` names a question id `q`):
+   patch (question-specific items name a question id `q`):
    - `answer` → set that question's `answer` (`kind` accept|option|text, plus `option`,
      `options`, or `text`, copied as the send gives them) and `status: "answered"`. On a
      `multi` question the send carries `options`, the picked letters in order, and `accept`
@@ -164,6 +175,10 @@ described there, then return to listening.
      `{who:"user", text, at}` (the send's `at`), then your reply `{who:"agent", text}`.
      Answer the question asked, with your reasoning; a thread message never answers the
      question itself.
+   - `general-thread` → append the user's message and your reply to top-level
+     `discussion` using the same `{who, text, at}` shape. Discuss the whole grill;
+     do not silently turn the exchange into a question answer. If it reveals a new
+     decision, add a question in the next round.
    - `defer` → `status: "deferred"`. `reopen` → `status: "reopened"`, `answer: null`.
    - `explore` → set the question's `explore`: `{ rows: [{ option, pros: [...], cons: [...] }] }`,
      one row per option in order, two to four pros and two to four cons each, specific to this
@@ -369,8 +384,8 @@ On a `finish` action, or when the user says finish in the terminal:
    `durable` question: the decision, the rejected options and why each lost); **Routine
    choices** (every other answered question, one bullet each); **Verified facts** (anything
    you established by exploring rather than asking, if any); **Risks**; **Deferred**
-   (deferred questions, with what would reopen them); **Open threads** (discussion points
-   that ended without a decision). Do not compress: a reader with no access to the session
+   (deferred questions, with what would reopen them); **Open threads** (question and general
+   discussion points that ended without a decision). Do not compress: a reader with no access to the session
    must be able to build from it.
 2. Patch `"finished": { "doc": … }` and `"agent": { "status": "waiting" }`
    (after a page Finish this is the send's one patch, with `handled`); the page shows the
@@ -391,10 +406,11 @@ On a `finish` action, or when the user says finish in the terminal:
 
 ## Wait mode (agents without a Monitor tool)
 
-Start the server detached with its output going to a log:
-`nohup node $SKILL/server.mjs serve --session <session> > <session>/serve.log 2>&1 &`.
-Verify it with `url` as in Start. If the harness terminates detached children, keep `serve`
-in a harness-managed running shell session instead and verify `url` again. A live page
+Start `node $SKILL/server.mjs serve --session <session> --open` in a harness-managed
+running shell session and retain its process/session ID. On Unix, a detached alternative is
+`nohup node "$SKILL/server.mjs" serve --session <session> --open > <session>/serve.log 2>&1 &`.
+`nohup` is not a PowerShell command; on Windows use the harness-managed shell session.
+Verify the server with `url` as in Start. A live page
 confirms the server is running, **not** that the agent is listening.
 
 Keep this loop active in the current agent turn:
@@ -442,6 +458,7 @@ What each field means. You write it only through `patch`.
     "thread": [{ "who": "user|agent", "text": "…", "at": "ISO" }]
   },
   "terms": [{ "term": "…", "def": "…", "avoid": ["…"] }],
+  "discussion": [{ "who": "user|agent", "text": "…", "at": "ISO" }],  // across the whole grill
   "questions": [{
     "id": "q7", "round": 4, "deps": ["q2"], "title": "…", "body": "…",
     "options": [{ "k": "A", "text": "…" }],
@@ -462,6 +479,7 @@ Send lines (`events.jsonl`, also printed by `serve`):
   { "q": "q15", "type": "answer", "kind": "accept|option|text", "option": "A", "text": "…" },
   { "q": "q16", "type": "answer", "kind": "accept|option", "options": ["A", "C"] },  // a multi question
   { "q": "q8",  "type": "thread", "text": "…" },
+  { "type": "general-thread", "text": "…" },
   { "q": "q17", "type": "defer" }, { "q": "q3", "type": "reopen" }, { "q": "q9", "type": "explore" },
   { "type": "visualize", "subagent": true }, { "type": "visual-feedback", "text": "…", "subagent": true },
   { "type": "finish", "subagent": true } ] }   // subagent: the page's Use subagent checkbox; absent means true

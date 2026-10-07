@@ -34,9 +34,9 @@ The questions are the source of truth; the visual is derived from them.
 
 `<session>/visual.html`, **one self-contained file**: inline CSS and JS, system fonts, no
 network requests, no external assets. The page shows it in an iframe with
-`sandbox="allow-scripts"` and no same-origin access, so a fetch, a CDN font, or an image
-URL fails silently. Before you finish, run `grep -n '://' <session>/visual.html`; the only
-allowed hit is the Mermaid script tag described below.
+`sandbox="allow-scripts"` and no same-origin access; the server also sends a content
+security policy that blocks external scripts, images, and fetches. Before you finish,
+search the file for `://` and remove any external URL.
 
 Start the file with an HTML comment: the topic, the questions it reflects (id and one
 phrase each), which regions are assumed, and for a redraw what this version changed.
@@ -59,8 +59,7 @@ controls; the clicks, toggles, and states the design has; plausible fake data fo
 
 **Diagram** (kind = diagram): inline SVG, or HTML boxes with an SVG arrow layer, with a
 legend; architecture, data flow, sequence, or state, whichever fits the topic. Label the
-edges. Past roughly fifteen nodes hand layout stops working; then you may embed Mermaid from
-a CDN inside the file, with a one-line note in the file that it needs network.
+edges. For larger diagrams, use a clear clustered layout and keep it self-contained.
 
 ## Reply
 
